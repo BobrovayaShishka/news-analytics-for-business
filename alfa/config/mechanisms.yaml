@@ -1,0 +1,178 @@
+# Инструменты и критичные поля по механизмам.
+# sensitivity_requires — объединение requires из sensitivity.yaml:
+# это известные признаки, без которых механизм не срабатывает.
+# critical_fields — поля из structurally_missing (alfa/config.yaml),
+# без которых уже сработавший механизм нельзя перевести из условной формулировки в прямую.
+# Ответ на такое поле меняет вывод, поэтому changes_conclusion совпадает с critical_fields.
+version: mechanisms-v1
+
+questions:
+  debt_rate_type:
+    text: "Ставка по вашему кредиту плавающая или фиксированная?"
+    why_asked: "От типа ставки зависит, меняется ли платёж при решении по ключевой ставке."
+    options:
+      - {label: "плавающая", value: "floating"}
+      - {label: "фиксированная", value: "fixed"}
+      - {label: "Не знаю", value: "unknown"}
+  debt_amount:
+    text: "Каков порядок суммы кредита?"
+    why_asked: "Без суммы расчёт остаётся иллюстрацией на единицу, а не оценкой компании."
+    options:
+      - {label: "до 100 млн ₽", value: "small"}
+      - {label: "от 100 до 500 млн ₽", value: "mid"}
+      - {label: "больше 500 млн ₽", value: "large"}
+      - {label: "Не знаю", value: "unknown"}
+  debt_maturity:
+    text: "Кредит скорее короткий или длинный?"
+    why_asked: "Срок влияет на то, успеет ли ставка сказаться на платеже."
+    options:
+      - {label: "до года", value: "short"}
+      - {label: "дольше года", value: "long"}
+      - {label: "Не знаю", value: "unknown"}
+  fx_expense_share:
+    text: "Какая примерно доля расходов компании в иностранной валюте?"
+    why_asked: "Без доли расходов влияние курса остаётся условным."
+    options:
+      - {label: "до 10%", value: "low"}
+      - {label: "от 10% до 30%", value: "mid"}
+      - {label: "больше 30%", value: "high"}
+      - {label: "Не знаю", value: "unknown"}
+  fx_revenue_share:
+    text: "Какая примерно доля выручки компании в иностранной валюте?"
+    why_asked: "Без доли выручки валютный эффект нельзя перевести в масштаб компании."
+    options:
+      - {label: "до 10%", value: "low"}
+      - {label: "от 10% до 30%", value: "mid"}
+      - {label: "больше 30%", value: "high"}
+      - {label: "Не знаю", value: "unknown"}
+
+mechanisms:
+  debt_service_cost:
+    directness: direct
+    sensitivity_requires: [has_credit, has_leasing, size_class]
+    critical_fields: [debt_rate_type]
+    optional_fields: [debt_amount, debt_maturity]
+    changes_conclusion: [debt_rate_type]
+    tools:
+      - {tool: get_profile_view, args: {}}
+      - {tool: search_alfa_analytics, args: {topic: key_rate}}
+      - {tool: calc, args: {fn: rate_sensitivity}}
+    optional_tools:
+      - {tool: get_group_context, args: {}}
+
+  deposit_yield:
+    directness: direct
+    sensitivity_requires: [has_deposit]
+    critical_fields: []
+    optional_fields: []
+    changes_conclusion: []
+    tools:
+      - {tool: get_profile_view, args: {}}
+      - {tool: search_alfa_analytics, args: {topic: key_rate}}
+    optional_tools: []
+
+  fx_cost:
+    directness: direct
+    sensitivity_requires: [fx_exposure]
+    critical_fields: [fx_expense_share]
+    optional_fields: [fx_revenue_share]
+    changes_conclusion: [fx_expense_share]
+    tools:
+      - {tool: get_profile_view, args: {}}
+      - {tool: get_counterparties, args: {direction: both}}
+      - {tool: search_alfa_analytics, args: {topic: fx}}
+      - {tool: calc, args: {fn: fx_sensitivity}}
+    optional_tools: []
+
+  import_restrictions:
+    directness: direct
+    sensitivity_requires: [fx_exposure, fts_countries]
+    critical_fields: [fx_expense_share]
+    optional_fields: [fx_revenue_share]
+    changes_conclusion: [fx_expense_share]
+    tools:
+      - {tool: get_profile_view, args: {}}
+      - {tool: get_counterparties, args: {direction: both}}
+      - {tool: search_alfa_analytics, args: {topic: sanctions_trade}}
+    optional_tools: []
+
+  labor_cost:
+    directness: direct
+    sensitivity_requires: [has_payroll, workers_class]
+    critical_fields: []
+    optional_fields: []
+    changes_conclusion: []
+    tools:
+      - {tool: get_profile_view, args: {}}
+      - {tool: search_alfa_analytics, args: {topic: labor}}
+      - {tool: calc, args: {fn: payroll_cost_change}}
+    optional_tools: []
+
+  demand_shift:
+    directness: direct
+    sensitivity_requires: [industry_theme, has_factoring, has_rko]
+    critical_fields: []
+    optional_fields: []
+    changes_conclusion: []
+    tools:
+      - {tool: get_profile_view, args: {}}
+      - {tool: search_alfa_analytics, args: {topic: consumer_demand}}
+    optional_tools:
+      - {tool: get_group_context, args: {}}
+
+  input_cost:
+    directness: direct
+    sensitivity_requires: [has_credit, has_leasing, industry_theme, has_payment_data]
+    critical_fields: []
+    optional_fields: []
+    changes_conclusion: []
+    tools:
+      - {tool: get_profile_view, args: {}}
+      - {tool: search_alfa_analytics, args: {topic: from_event}}
+    optional_tools:
+      - {tool: get_counterparties, args: {direction: both}}
+
+  commodity_revenue:
+    directness: direct
+    sensitivity_requires: [industry_theme]
+    critical_fields: []
+    optional_fields: []
+    changes_conclusion: []
+    tools:
+      - {tool: get_profile_view, args: {}}
+      - {tool: search_alfa_analytics, args: {topic: commodities_gold}}
+    optional_tools: []
+
+  tax_burden:
+    directness: direct
+    sensitivity_requires: [has_rko]
+    critical_fields: []
+    optional_fields: []
+    changes_conclusion: []
+    tools:
+      - {tool: get_profile_view, args: {}}
+      - {tool: search_alfa_analytics, args: {topic: taxes}}
+    optional_tools: []
+
+  regulatory_cost:
+    directness: direct
+    sensitivity_requires: [industry_group]
+    critical_fields: []
+    optional_fields: []
+    changes_conclusion: []
+    tools:
+      - {tool: get_profile_view, args: {}}
+      - {tool: search_alfa_analytics, args: {topic: sector_regulation}}
+    optional_tools: []
+
+  guarantee_risk:
+    directness: direct
+    sensitivity_requires: [has_guarantees]
+    critical_fields: []
+    optional_fields: []
+    changes_conclusion: []
+    tools:
+      - {tool: get_profile_view, args: {}}
+      - {tool: get_counterparties, args: {direction: both}}
+      - {tool: search_alfa_analytics, args: {topic: sanctions_trade}}
+    optional_tools: []

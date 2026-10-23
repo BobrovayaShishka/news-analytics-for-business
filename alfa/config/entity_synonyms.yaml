@@ -1,0 +1,85 @@
+# Синонимы сущностей новости → канон. Незнакомое ниже порога косинуса не линкуется.
+version: synonyms-v1
+
+countries:
+  китай: CN
+  кнр: CN
+  china: CN
+  азербайджан: AZ
+  грузия: GE
+  латвия: LV
+  польша: PL
+  казахстан: KZ
+  турция: TR
+  беларусь: BY
+  белоруссия: BY
+  сша: US
+  usa: US
+  соединенные штаты: US
+  германия: DE
+  евросоюз: EU
+  ес: EU
+  индия: IN
+  армения: AM
+
+industries:
+  золотодобыча:
+    industry_group: gold_mining
+    themes: [gold]
+  "добыча золота":
+    industry_group: gold_mining
+    themes: [gold]
+  золото:
+    industry_group: gold_mining
+    themes: [gold]
+  "оптовая торговля металлами":
+    industry_group: wholesale_metals
+    themes: [gold]
+  металлоторговля:
+    industry_group: wholesale_metals
+    themes: [gold]
+  нефть:
+    industry_group: mining_oil_gas
+    themes: [oil]
+  нефть и газ:
+    industry_group: mining_oil_gas
+    themes: [oil]
+  brent:
+    industry_group: mining_oil_gas
+    themes: [oil]
+  "розничная торговля":
+    industry_group: retail
+    themes: [consumer]
+  ритейл:
+    industry_group: retail
+    themes: [consumer]
+  грузоперевозки:
+    industry_group: land_transport
+    themes: [transport]
+  автоперевозки:
+    industry_group: land_transport
+    themes: [transport]
+  строительство:
+    industry_group: construction_buildings
+    themes: [construction]
+  "добыча металлических руд":
+    industry_group: mining_metal
+    themes: [metal]
+
+regions:
+  москва: москва
+  мск: москва
+  татарстан: республика татарстан
+  "республика татарстан": республика татарстан
+  башкортостан: республика башкортостан
+  "иркутская область": иркутская область
+  "московская область": московская область
+
+currencies:
+  доллар: USD
+  usd: USD
+  юань: CNY
+  cny: CNY
+  евро: EUR
+  eur: EUR
+  рубль: RUB

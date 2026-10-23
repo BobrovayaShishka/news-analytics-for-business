@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://news-analytics-for-business/schemas/relevance.schema.json",
+  "title": "Relevance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "company_id", "news_id", "score", "decision", "signals"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "company_id": { "type": "string" },
+    "news_id": { "type": "string" },
+    "score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "decision": { "enum": ["show", "hide"] },
+    "signals": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/signal" }
+    },
+    "rejected_signals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["feature", "reason"],
+        "properties": {
+          "feature": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["feature", "weight", "contribution", "reason"],
+      "properties": {
+        "feature": { "type": "string" },
+        "value": {},
+        "weight": { "type": "number", "minimum": 0, "maximum": 1 },
+        "contribution": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reason": { "type": "string" }
+      }
+    }
+  }
+}

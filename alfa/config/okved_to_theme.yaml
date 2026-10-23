@@ -1,0 +1,43 @@
+# Темы для отраслевых правил ранжирования.
+# Длинный префикс ОКВЭД побеждает. Добыча золота и опт металлов — разные темы.
+# industry_group профиля по-прежнему считается alfa/okved_to_theme.yaml.
+version: okved-themes-v1
+
+okved_prefixes:
+  "07.29": [gold_mining]
+  "07": [metal_mining]
+  "06": [oil_gas]
+  "46.72": [metal_trade]
+  "46.71": [fuel_trade]
+  "46": [trade]
+  "47": [retail_demand]
+  "49": [transport]
+  "41": [construction]
+  "42": [construction]
+  "43": [construction]
+  "68": [real_estate]
+  "64": [finance]
+  "10": [manufacturing]
+  "24": [manufacturing]
+  "25": [manufacturing]
+  "28": [manufacturing]
+
+industry_group:
+  gold_mining: [gold_mining]
+  mining_metal: [metal_mining]
+  mining_oil_gas: [oil_gas]
+  wholesale_metals: [metal_trade]
+  wholesale_fuel: [fuel_trade]
+  wholesale: [trade]
+  retail: [retail_demand]
+  land_transport: [transport]
+  road_freight: [transport]
+  construction_buildings: [construction]
+  civil_engineering: [construction]
+  specialized_construction: [construction]
+  manufacturing_machinery: [manufacturing]
+  manufacturing_metals: [manufacturing]
+  manufacturing_metal_products: [manufacturing]
+  real_estate: [real_estate]
+  energy: [energy]
+  finance: [finance]

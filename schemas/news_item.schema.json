@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://news-analytics-for-business/schemas/news_item.schema.json",
+  "title": "NewsItem",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "news_id",
+    "source",
+    "title",
+    "event_type",
+    "themes",
+    "industries_okved2",
+    "regions",
+    "entities",
+    "key_facts"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "news_id": { "type": "string", "minLength": 1 },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "published_at"],
+      "properties": {
+        "name": { "type": "string" },
+        "url": { "type": ["string", "null"] },
+        "published_at": { "type": "string" },
+        "retrieved_at": { "type": ["string", "null"] },
+        "note": { "type": "string" }
+      }
+    },
+    "title": { "type": "string" },
+    "language": { "type": "string" },
+    "themes": { "type": "array", "items": { "type": "string" } },
+    "industries_okved2": { "type": "array", "items": { "type": "string" } },
+    "event_type": {
+      "enum": [
+        "rate_decision",
+        "inflation_print",
+        "macro_release",
+        "fx_move",
+        "commodity_move",
+        "regulation",
+        "debt_market",
+        "labor_market",
+        "company_event",
+        "other"
+      ]
+    },
+    "regions": { "type": "array", "items": { "type": "string" } },
+    "entities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "type"],
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "enum": ["regulator", "company", "market", "institution", "country", "other"] }
+        }
+      }
+    },
+    "key_facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "status", "source_ids"],
+        "properties": {
+          "text": { "type": "string" },
+          "status": { "enum": ["confirmed", "reported"] },
+          "source_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+        }
+      }
+    }
+  }
+}

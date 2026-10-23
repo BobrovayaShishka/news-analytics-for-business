@@ -1,0 +1,38 @@
+# Уровень влияния считает код. Модель пишет только обоснование.
+# Словесные определения показываются в интерфейсе по клику на метку.
+version: impact-rubric-v1
+
+levels:
+  high:
+    min_score: 0.72
+    definition: "Событие прямо затрагивает стоимость денег, валютную позицию или выручку, и для оценки хватает данных."
+  medium:
+    min_score: 0.4
+    definition: "Связь с компанией есть, но эффект ограничен одним контуром или частью данных."
+  low:
+    min_score: 0.0
+    definition: "Связь узкая или данных мало, поэтому вывод остаётся условным."
+
+weights:
+  direct: 0.46
+  indirect: 0.22
+  extra_mechanism: 0.08
+  extra_mechanism_cap: 0.16
+  importance: 0.25
+  payment_share: 0.12
+  reliability:
+    high: 0.08
+    medium: 0.04
+    low: 0.0
+    none: 0.0
+  horizon:
+    key_rate: 0.05
+    fx: 0.05
+    inflation: 0.03
+    sanctions_trade: 0.03
+    default: 0.0
+
+# Понижение на одну ступень за каждое из условий. Ниже low не опускаемся.
+downgrade:
+  reliability_low: [low, none]
+  missing_critical: true

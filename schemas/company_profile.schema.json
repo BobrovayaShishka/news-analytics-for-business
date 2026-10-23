@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://news-analytics-for-business/schemas/company_profile.schema.json",
+  "title": "CompanyProfile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "company_id",
+    "activity",
+    "scale",
+    "bank_products",
+    "trade",
+    "data_gaps"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "company_id": { "type": "string", "minLength": 1 },
+    "group_id": { "type": ["string", "null"] },
+    "ownership": { "type": ["string", "null"] },
+    "age_band": { "type": ["string", "null"] },
+    "eco_stage": { "type": ["string", "null"] },
+    "city": { "type": ["string", "null"] },
+    "region": { "type": ["string", "null"] },
+    "client_type": { "enum": ["CLIENT", "PROSPECT", "CLOSE_CLIENT", null] },
+    "activity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["okved_code", "okved_name", "okved2"],
+      "properties": {
+        "okved_code": { "type": ["string", "null"] },
+        "okved_name": { "type": ["string", "null"] },
+        "okved2": { "type": ["string", "null"] }
+      }
+    },
+    "scale": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revenue_rub", "market_position"],
+      "properties": {
+        "revenue_rub": { "type": ["number", "null"] },
+        "employees_fns": { "type": ["string", "null"] },
+        "market_position": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method"],
+          "properties": {
+            "method": { "const": "revenue_rank_within_okved2" },
+            "okved2": { "type": ["string", "null"] },
+            "rank": { "type": ["integer", "null"] },
+            "peers": { "type": ["integer", "null"] },
+            "share_percent": { "type": "null" },
+            "note": { "type": "string" }
+          }
+        }
+      }
+    },
+    "bank_products": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rko": { "type": ["boolean", "null"] },
+        "guarantees": { "type": ["boolean", "null"] },
+        "loans": { "type": ["boolean", "null"] },
+        "leasing": { "type": ["boolean", "null"] },
+        "deposits": { "type": ["boolean", "null"] },
+        "payroll": { "type": ["boolean", "null"] },
+        "factoring": { "type": ["boolean", "null"] }
+      }
+    },
+    "trade": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fts_flag", "countries"],
+      "properties": {
+        "fts_flag": { "type": ["boolean", "null"] },
+        "countries": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "key_owner_mark": { "type": ["boolean", "null"] },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "size": { "type": ["integer", "null"] },
+        "other_okved2": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "counterparties": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outbound_count": { "type": "integer" },
+        "inbound_count": { "type": "integer" },
+        "top_outbound": { "type": "array", "items": { "$ref": "#/$defs/counterparty" } },
+        "top_inbound": { "type": "array", "items": { "$ref": "#/$defs/counterparty" } }
+      }
+    },
+    "relevance_topics": { "type": "array", "items": { "type": "string" } },
+    "data_gaps": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "counterparty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "amount_rub", "pay_cnt", "in_company_table"],
+      "properties": {
+        "id": { "type": "string" },
+        "amount_rub": { "type": "number" },
+        "pay_cnt": { "type": "integer" },
+        "in_company_table": { "type": "boolean" },
+        "okved_code": { "type": ["string", "null"] },
+        "okved_name": { "type": ["string", "null"] },
+        "direction_note": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://news-analytics-for-business/schemas/insight.schema.json",
+  "title": "Insight",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "insight_id",
+    "company_id",
+    "news_id",
+    "confirmed_facts",
+    "bank_position",
+    "ai_inference",
+    "why_this_company",
+    "company_signals_used",
+    "risks",
+    "opportunities",
+    "next_actions",
+    "data_gaps",
+    "sources",
+    "trace"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "insight_id": { "type": "string" },
+    "company_id": { "type": "string" },
+    "news_id": { "type": "string" },
+    "confirmed_facts": { "type": "array", "items": { "$ref": "#/$defs/claim" } },
+    "bank_position": { "type": "array", "items": { "$ref": "#/$defs/claim" } },
+    "ai_inference": { "type": "array", "items": { "$ref": "#/$defs/claim" } },
+    "why_this_company": { "type": "string" },
+    "company_signals_used": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["feature", "value"],
+        "properties": {
+          "feature": { "type": "string" },
+          "value": {}
+        }
+      }
+    },
+    "risks": { "type": "array", "items": { "$ref": "#/$defs/impact" } },
+    "opportunities": { "type": "array", "items": { "$ref": "#/$defs/impact" } },
+    "next_actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "audience", "source_ids"],
+        "properties": {
+          "text": { "type": "string" },
+          "audience": { "type": "string" },
+          "source_ids": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "data_gaps": { "type": "array", "items": { "type": "string" } },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "title"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "enum": ["external_news", "bank_analytics", "company_data"] },
+          "title": { "type": "string" },
+          "locator": { "type": "string" },
+          "url": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "trace": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step", "action"],
+        "properties": {
+          "step": { "type": "integer" },
+          "action": { "type": "string" },
+          "tool": { "type": "string" },
+          "detail": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "source_ids"],
+      "properties": {
+        "text": { "type": "string" },
+        "source_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      }
+    },
+    "impact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "source_ids"],
+      "properties": {
+        "text": { "type": "string" },
+        "source_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      }
+    }
+  }
+}

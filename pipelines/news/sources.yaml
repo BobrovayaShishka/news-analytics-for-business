@@ -1,0 +1,192 @@
+# Реестр легальных источников. Парсер ходит только сюда.
+# Проверка доступа записана в access и продублирована в DEPENDENCIES.md.
+# enabled: false у резерва — его включает здоровье основного источника той же fallback_group.
+
+sources:
+  - name: cbr_press
+    type: rss
+    feed_url: https://www.cbr.ru/rss/RssPress
+    trust_tier: official
+    topic_hints: [key_rate, inflation, fx, sector_regulation]
+    timezone: Europe/Moscow
+    poll_interval_s: 900
+    fallback_group: official
+    role: primary
+    enabled: true
+    selectors:
+      title: h1
+      text: article
+      date: time
+    strip_patterns:
+      - "(?i)пресс-служба банка россии"
+    notes: "Официальные пресс-релизы. В интерфейсе — заголовок, фрагмент и ссылка."
+    access:
+      checked_at: "2026-10-23"
+      robots_url: https://www.cbr.ru/robots.txt
+      robots_allows: true
+      robots_note: "User-agent * запрещает отдельные PDF, поиск и /Content/SaveToPdf. RSS и страницы пресс-релизов не запрещены. Лента RssPress ответила 200."
+      license: "Официальная RSS-лента. При использовании материала нужна ссылка на пресс-службу Банка России."
+      license_url: https://www.cbr.ru/development/RSS/
+
+  - name: minfin_news
+    type: rss
+    feed_url: https://minfin.gov.ru/rss_news?mod=news&lim=20
+    trust_tier: official
+    topic_hints: [taxes, other_econ]
+    timezone: Europe/Moscow
+    poll_interval_s: 900
+    fallback_group: official
+    role: primary
+    enabled: true
+    selectors:
+      title: h1
+      text: article
+      date: time
+    strip_patterns:
+      - "(?i)официальный сайт минфина"
+    notes: "Новости Минфина. Параметры mod и lim у ленты не служебный трекинг, их не выкидывать."
+    access:
+      checked_at: "2026-10-23"
+      robots_url: https://minfin.gov.ru/robots.txt
+      robots_allows: true
+      robots_note: "Для User-agent * закрыты поиск, избранное и служебные каталоги. RSS не запрещён. Именованные боты, включая часть AI-агентов, закрыты целиком; честный UA alfa-hackaton-news попадает под * и разрешён."
+      license: "Creative Commons Attribution 4.0. Нужна атрибуция Минфина России."
+      license_url: https://minfin.gov.ru/ru/about/
+
+  - name: rbc_economics
+    type: rss
+    feed_url: https://rssexport.rbc.ru/rbcnews/economics/30/full.rss
+    trust_tier: major_media
+    topic_hints: [key_rate, inflation, fx, other_econ]
+    timezone: Europe/Moscow
+    poll_interval_s: 1800
+    fallback_group: business
+    role: primary
+    enabled: true
+    selectors:
+      title: h1
+      text: article
+      date: time
+    notes: "Деловое СМИ. Полный текст хранится для извлечения, в выдаче пользователю только фрагмент и ссылка."
+    access:
+      checked_at: "2026-10-23"
+      robots_url: https://www.rbc.ru/robots.txt
+      robots_allows: true
+      robots_note: "www.rbc.ru для User-agent * запрещает поиск, preview, ajax и URL с page. Раздел экономики и карточки без этих шаблонов разрешены. robots.txt хоста rssexport.rbc.ru в эту дату не открылся по таймауту TLS; лента — публичный RSS-экспорт РБК. Если robots экспортного хоста недоступен в момент сбора, источник пропускается и группа business включает резерв."
+      license: "Авторское право РБК, открытой лицензии на перепечатку нет. Автоматический обход robots не запрещает. В интерфейсе текст целиком не показывается."
+      license_url: https://www.rbc.ru/
+
+  - name: interfax
+    type: rss
+    feed_url: https://www.interfax.ru/rss.asp
+    trust_tier: major_media
+    topic_hints: [other_econ, fx, sanctions_trade]
+    timezone: Europe/Moscow
+    poll_interval_s: 1800
+    fallback_group: business
+    role: primary
+    enabled: true
+    selectors:
+      title: h1
+      text: article
+      date: time
+    notes: "Деловое СМИ. Спорт и культура отсекаются флагом prefilter, документ не удаляется."
+    access:
+      checked_at: "2026-10-23"
+      robots_url: https://www.interfax.ru/robots.txt
+      robots_allows: true
+      robots_note: "User-agent * запрещает только /errors, /search, /Infinite и /aas. RSS /rss.asp и материалы вне этих путей разрешены."
+      license: "Авторское право Интерфакса, открытой лицензии нет. В интерфейсе — заголовок, фрагмент и ссылка на оригинал."
+      license_url: https://www.interfax.ru/
+
+  - name: kommersant_business
+    type: rss
+    feed_url: https://www.kommersant.ru/RSS/section-business.xml
+    trust_tier: major_media
+    topic_hints: [sector_regulation, other_econ, ma]
+    timezone: Europe/Moscow
+    poll_interval_s: 2400
+    fallback_group: business
+    role: primary
+    enabled: true
+    selectors:
+      title: h1
+      text: article
+      date: time
+    notes: "Деловой и отраслевой раздел. Страницы на Nuxt без текста помечаются needs_js и не идут в извлечение."
+    access:
+      checked_at: "2026-10-23"
+      robots_url: https://www.kommersant.ru/robots.txt
+      robots_allows: true
+      robots_note: "User-agent * запрещает /doc-rss, URL с query в корне, поиск и ряд служебных путей. /RSS/section-business.xml и /doc/<id> без query не запрещены."
+      license: "Авторское право ИД Коммерсантъ, открытой лицензии нет. В интерфейсе текст целиком не воспроизводится."
+      license_url: https://www.kommersant.ru/
+
+  - name: cbr_events
+    type: rss
+    feed_url: https://www.cbr.ru/rss/eventrss
+    trust_tier: official
+    topic_hints: [key_rate, inflation, sector_regulation]
+    timezone: Europe/Moscow
+    poll_interval_s: 900
+    fallback_group: official
+    role: fallback
+    enabled: false
+    selectors:
+      title: h1
+      text: article
+      date: time
+    notes: "Резерв группы official. Включается сам, если cbr_press или minfin_news переходят в degraded или down."
+    access:
+      checked_at: "2026-10-23"
+      robots_url: https://www.cbr.ru/robots.txt
+      robots_allows: true
+      robots_note: "Те же правила, что у cbr_press. Лента eventrss опубликована Банком России в разделе RSS."
+      license: "Официальная RSS-лента. При использовании нужна ссылка на пресс-службу."
+      license_url: https://www.cbr.ru/development/RSS/
+
+  - name: vedomosti_economics
+    type: rss
+    feed_url: https://www.vedomosti.ru/rss/rubric/economics
+    trust_tier: major_media
+    topic_hints: [other_econ, key_rate, fx]
+    timezone: Europe/Moscow
+    poll_interval_s: 1800
+    fallback_group: business
+    role: fallback
+    enabled: false
+    selectors:
+      title: h1
+      text: article
+      date: time
+    notes: "Резерв группы business. Частота опроса растёт, пока основной источник группы нездоров."
+    access:
+      checked_at: "2026-10-23"
+      robots_url: https://www.vedomosti.ru/robots.txt
+      robots_allows: true
+      robots_note: "User-agent * запрещает поиск, личный кабинет и любой URL с query (*?*). RSS без query и карточки без параметров разрешены. Запрос с utm не делается: канонический URL их снимает, а исходную ссылку с query robots может запретить — тогда остаётся текст ленты."
+      license: "Авторское право Ведомостей, открытой лицензии нет. В интерфейсе — фрагмент и ссылка."
+      license_url: https://www.vedomosti.ru/
+
+  - name: fas_news
+    type: rss
+    feed_url: https://fas.gov.ru/news.rss
+    trust_tier: official
+    topic_hints: [sector_regulation]
+    timezone: Europe/Moscow
+    poll_interval_s: 1800
+    fallback_group: regulation
+    role: primary
+    enabled: false
+    selectors:
+      title: h1
+      text: article
+      date: time
+    notes: "Отраслевой регулятор. Выключен, пока robots.txt не проверен успешно."
+    access:
+      checked_at: "2026-10-23"
+      robots_url: https://fas.gov.ru/robots.txt
+      robots_allows: false
+      robots_note: "Проверка 23 октября 2026 не завершилась: таймаут TLS на robots.txt. Автоматический доступ не подтверждён, источник не опрашивается."
+      license: "На сайте указана Creative Commons Attribution 4.0. Без успешного robots источник в сбор не входит."
+      license_url: https://fas.gov.ru/

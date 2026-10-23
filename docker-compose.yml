@@ -1,0 +1,9 @@
+services:
+  news-ingest:
+    build: .
+    command: ["python", "-m", "pipelines.news", "ingest", "--loop"]
+    environment:
+      ALFA_LOG_LEVEL: INFO
+    volumes:
+      - ./data/news:/app/data/news
+    restart: unless-stopped

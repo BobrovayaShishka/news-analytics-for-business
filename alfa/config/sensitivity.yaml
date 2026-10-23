@@ -1,0 +1,212 @@
+# Карта чувствительности. Коды event_types — из taxonomy.yaml.
+# Пример в постановке с fx_rate/sanctions здесь назван так, как в таксономии: fx, sanctions_trade.
+# requires: признак должен быть известен. Неизвестное не даёт срабатывания.
+version: sensitivity-v1
+
+mechanisms:
+  - debt_service_cost
+  - deposit_yield
+  - fx_cost
+  - import_restrictions
+  - labor_cost
+  - demand_shift
+  - input_cost
+  - commodity_revenue
+  - tax_burden
+  - regulatory_cost
+  - guarantee_risk
+
+rules:
+  - rule_id: key_rate__credit
+    event_types: [key_rate]
+    when: {feature: has_credit, eq: true}
+    weight: 0.9
+    mechanism_id: debt_service_cost
+    requires: [has_credit]
+    confidence_base: 0.8
+
+  - rule_id: key_rate__leasing
+    event_types: [key_rate]
+    when: {feature: has_leasing, eq: true}
+    weight: 0.85
+    mechanism_id: debt_service_cost
+    requires: [has_leasing]
+    confidence_base: 0.75
+
+  - rule_id: key_rate__deposit
+    event_types: [key_rate]
+    when: {feature: has_deposit, eq: true}
+    weight: 0.6
+    mechanism_id: deposit_yield
+    requires: [has_deposit]
+    confidence_base: 0.7
+
+  - rule_id: fx__fts
+    event_types: [fx]
+    when: {feature: fx_exposure, eq: known}
+    weight: 0.8
+    mechanism_id: fx_cost
+    requires: [fx_exposure]
+    confidence_base: 0.75
+    entity_boost: {event_entity: country, client_feature: fts_countries, boost: 0.15}
+
+  - rule_id: sanctions__fx_exposure
+    event_types: [sanctions_trade]
+    when: {feature: fx_exposure, eq: known}
+    weight: 0.7
+    mechanism_id: import_restrictions
+    requires: [fx_exposure]
+    confidence_base: 0.7
+
+  - rule_id: sanctions__country
+    event_types: [sanctions_trade]
+    when: {feature: event_country_in_fts, eq: true}
+    weight: 0.75
+    mechanism_id: import_restrictions
+    requires: [fts_countries]
+    confidence_base: 0.7
+
+  - rule_id: sanctions__guarantees
+    event_types: [sanctions_trade]
+    when: {feature: has_guarantees, eq: true}
+    weight: 0.7
+    mechanism_id: guarantee_risk
+    requires: [has_guarantees]
+    confidence_base: 0.65
+
+  - rule_id: inflation__credit
+    event_types: [inflation]
+    when: {feature: has_credit, eq: true}
+    weight: 0.6
+    mechanism_id: input_cost
+    requires: [has_credit]
+    confidence_base: 0.6
+
+  - rule_id: inflation__leasing
+    event_types: [inflation]
+    when: {feature: has_leasing, eq: true}
+    weight: 0.6
+    mechanism_id: input_cost
+    requires: [has_leasing]
+    confidence_base: 0.6
+
+  - rule_id: inflation__deposit
+    event_types: [inflation]
+    when: {feature: has_deposit, eq: true}
+    weight: 0.55
+    mechanism_id: deposit_yield
+    requires: [has_deposit]
+    confidence_base: 0.55
+
+  - rule_id: taxes__rko
+    event_types: [taxes]
+    when: {feature: has_rko, eq: true}
+    weight: 0.55
+    mechanism_id: tax_burden
+    requires: [has_rko]
+    confidence_base: 0.6
+
+  - rule_id: labor__payroll
+    event_types: [labor]
+    when: {feature: has_payroll, eq: true}
+    weight: 0.85
+    mechanism_id: labor_cost
+    requires: [has_payroll]
+    confidence_base: 0.8
+
+  - rule_id: labor__headcount
+    event_types: [labor]
+    when: {feature: workers_class, gte: 2}
+    weight: 0.5
+    mechanism_id: labor_cost
+    requires: [workers_class]
+    confidence_base: 0.55
+
+  - rule_id: gold__mining
+    event_types: [commodities_gold]
+    entity_themes: [gold]
+    when: {feature: industry_theme, in: [gold_mining]}
+    weight: 0.9
+    mechanism_id: commodity_revenue
+    requires: [industry_theme]
+    confidence_base: 0.8
+
+  - rule_id: gold__metal_trade
+    event_types: [commodities_gold]
+    entity_themes: [gold]
+    when: {feature: industry_theme, in: [metal_trade]}
+    weight: 0.72
+    mechanism_id: input_cost
+    requires: [industry_theme]
+    confidence_base: 0.7
+
+  - rule_id: gold__neighborhood
+    event_types: [commodities_gold]
+    entity_themes: [gold]
+    when: {feature: industry_share, gte: 0.5}
+    min_reliability: medium
+    weight: 0.55
+    mechanism_id: input_cost
+    requires: [has_payment_data]
+    confidence_base: 0.5
+
+  - rule_id: oil__upstream
+    event_types: [commodities_gold]
+    entity_themes: [oil]
+    when: {feature: industry_theme, in: [oil_gas]}
+    weight: 0.85
+    mechanism_id: commodity_revenue
+    requires: [industry_theme]
+    confidence_base: 0.75
+
+  - rule_id: oil__fuel_trade
+    event_types: [commodities_gold]
+    entity_themes: [oil]
+    when: {feature: industry_theme, in: [fuel_trade]}
+    weight: 0.6
+    mechanism_id: input_cost
+    requires: [industry_theme]
+    confidence_base: 0.6
+
+  - rule_id: demand__retail
+    event_types: [consumer_demand]
+    when: {feature: industry_theme, in: [retail_demand]}
+    weight: 0.85
+    mechanism_id: demand_shift
+    requires: [industry_theme]
+    confidence_base: 0.75
+
+  - rule_id: demand__factoring
+    event_types: [consumer_demand]
+    when: {feature: has_factoring, eq: true}
+    weight: 0.6
+    mechanism_id: demand_shift
+    requires: [has_factoring]
+    confidence_base: 0.6
+
+  - rule_id: regulation__industry
+    event_types: [sector_regulation]
+    when: {feature: event_industry_match, eq: true}
+    weight: 0.8
+    mechanism_id: regulatory_cost
+    requires: [industry_group]
+    confidence_base: 0.7
+
+  - rule_id: ma__credit_large
+    event_types: [ma]
+    when:
+      all:
+        - {feature: has_credit, eq: true}
+        - {feature: size_class, in: [S4, S5]}
+    weight: 0.7
+    mechanism_id: debt_service_cost
+    requires: [has_credit, size_class]
+    confidence_base: 0.55
+
+  - rule_id: other__rko
+    event_types: [other_econ]
+    when: {feature: has_rko, eq: true}
+    weight: 0.4
+    mechanism_id: demand_shift
+    requires: [has_rko]
+    confidence_base: 0.4

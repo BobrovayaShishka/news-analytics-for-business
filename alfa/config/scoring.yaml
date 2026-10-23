@@ -1,0 +1,234 @@
+# Веса и пороги ранжирования. version входит в weight_version каждого скора.
+# Одинаковый файл → одинаковые результаты.
+version: scoring-v1
+
+weights:
+  w_sens: 0.34
+  w_entity: 0.16
+  w_group: 0.16
+  w_graph: 0.22
+  w_sem: 0.04
+  w_an: 0.08
+
+score:
+  # score = relevance * (a + b * I_event) * F_fresh * T_src * (1 - P_dup)
+  a: 0.82
+  b: 0.18
+
+freshness:
+  default_half_life_days: 14
+  by_event_type:
+    key_rate: 7
+    fx: 5
+    inflation: 12
+    sanctions_trade: 21
+    taxes: 21
+    commodities_gold: 10
+    labor: 21
+    consumer_demand: 14
+    sector_regulation: 21
+    ma: 14
+    other_econ: 14
+    irrelevant: 7
+
+windows_days:
+  default: 45
+  key_rate: 30
+  fx: 14
+  inflation: 30
+  sanctions_trade: 45
+  taxes: 60
+  commodities_gold: 21
+  labor: 45
+  consumer_demand: 30
+  sector_regulation: 60
+  ma: 30
+  other_econ: 30
+  irrelevant: 7
+
+trust:
+  official: 1.0
+  major_media: 0.85
+  industry: 0.7
+  unverified: 0.45
+
+importance:
+  unknown: 0.3
+  base:
+    key_rate: 0.75
+    fx: 0.55
+    inflation: 0.6
+    sanctions_trade: 0.7
+    taxes: 0.5
+    commodities_gold: 0.55
+    labor: 0.5
+    consumer_demand: 0.45
+    sector_regulation: 0.5
+    ma: 0.4
+    other_econ: 0.35
+    irrelevant: 0.0
+  official_bonus: 0.12
+  magnitude_weight: 0.2
+  extra_source_bonus: 0.03
+  extra_source_cap: 0.09
+
+thresholds:
+  tau_show: 0.15
+  tau_show_critical: 0.12
+  critical_event_types: [key_rate]
+  tau_rel: 0.30
+  tau_imp: 0.7
+  tau_age_days: 4
+  sem_only_min: 0.82
+
+feed:
+  max_per_day: 5
+  max_same_mechanism: 2
+  max_per_cluster: 1
+  clients_per_event: 100
+  low_coverage_known_fraction: 0.35
+  empty_reasons:
+    no_events: "нет значимых событий"
+    low_data: "мало данных о компании"
+
+group:
+  gamma: 0.5
+  size_cap: 30
+
+graph:
+  reliability_coeff:
+    none: 0.0
+    low: 0.3
+    medium: 0.7
+    high: 1.0
+  hypothesis:
+    share_min: 0.25
+    known_share_min: 0.5
+    min_edges: 8
+    min_reliability: medium
+    confidence_share: 0.5
+    confidence_coverage: 0.3
+    confidence_edges: 0.2
+    edge_scale: 20
+    default_mechanism: input_cost
+    mechanisms: [input_cost, import_restrictions, commodity_revenue]
+
+analytics:
+  half_life_days: 30
+  stale_after_days: 60
+  stale_multiplier: 0.5
+
+penalties:
+  echo: 0.35
+  shown: 1.0
+  duplicate_mechanism: 0.25
+
+# Числа формулы, которые не являются весами каналов.
+calibration:
+  rule_weight_cap: 0.999999
+  signal_epsilon: 1.0e-9
+  reliability_unused: 99
+  confidence_high: 0.8
+  confidence_medium: 0.4
+  flag_true: 0.5
+
+embedding:
+  # hashing — офлайн-замена bge-m3. Сеть и скачивание весов не используются.
+  backend: hashing
+  dim: 256
+  fuzzy_threshold: 0.72
+
+entity:
+  country: 0.55
+  industry: 0.50
+  region: 0.35
+  currency: 0.15
+
+rerank:
+  enabled: false
+  top_m: 18
+  delta: 0.05
+  backend: stub
+
+coverage_features:
+  - has_credit
+  - has_leasing
+  - has_deposit
+  - has_payroll
+  - has_rko
+  - industry_group
+  - size_class
+  - fx_exposure
+  - region
+
+country_dictionary:
+  - AM
+  - AZ
+  - BY
+  - CN
+  - DE
+  - EU
+  - GE
+  - IN
+  - KZ
+  - LV
+  - PL
+  - TR
+  - US
+
+reasons:
+  debt_service_cost: "Ключевая ставка меняет стоимость обслуживания долга"
+  deposit_yield: "Доходность размещённых средств зависит от ставки"
+  fx_cost: "Курс влияет на валютную стоимость операций"
+  import_restrictions: "Ограничения внешней торговли затрагивают контур ВЭД"
+  labor_cost: "Изменение на рынке труда влияет на расходы на персонал"
+  demand_shift: "Сдвиг спроса затрагивает выручку в этой отрасли"
+  input_cost: "Цена входящих ресурсов меняет себестоимость"
+  commodity_revenue: "Цена сырья влияет на выручку профильной добычи"
+  tax_burden: "Налоговые условия меняют нагрузку на компанию"
+  regulatory_cost: "Отраслевые правила меняют стоимость деятельности"
+  guarantee_risk: "Санкционный контур повышает риск гарантий и расчётов"
+
+industry_labels:
+  gold_mining: "добыча золота"
+  metal_mining: "добыча металлических руд"
+  metal_trade: "оптовая торговля металлами"
+  fuel_trade: "оптовая торговля топливом"
+  oil_gas: "добыча нефти и газа"
+  retail_demand: "розничная торговля"
+  transport: "перевозки"
+  construction: "строительство"
+  manufacturing: "производство"
+  real_estate: "недвижимость"
+  trade: "оптовая торговля"
+  wholesale_metals: "оптовая торговля металлами"
+  land_transport: "перевозки"
+
+roles:
+  казначей: [fx_cost, debt_service_cost]
+  "финансовый директор": [debt_service_cost, tax_burden]
+  "главный бухгалтер": [tax_burden, debt_service_cost]
+
+# Не официальный тариф банка и не тариф организатора.
+# В репозитории цен нет — числа ниже только для модели стоимости, status=placeholder.
+tariffs:
+  status: placeholder
+  note: "Заглушка, не официальный тариф. В репозитории нет тарифов организатора."
+  interpretation_tokens_per_pair: 800
+  price_per_1k_tokens_rub: 2.5
+
+paths:
+  profiles: data/features/profiles.parquet
+  graph_features: data/features/graph_features.parquet
+  groups: data/features/groups.parquet
+  clients_dir: clients
+  scored_dir: data/ranking
+  impressions: data/ranking/impressions.jsonl
+  embedding_cache: data/cache/ranking_embeddings
+
+bench:
+  full_base_timeout_s: 90
+  smoke_timeout_s: 10
+  sizes: [5000, 10000]
+  event_counts: [1, 5, 20]
+  seed: 7

@@ -1,0 +1,92 @@
+# Новости, LLM и поиск. Читает alfa.core.config.
+# Профили компаний — в alfa/config.yaml (alfa.settings).
+# Пути от корня репозитория, каталог данных — data/.
+# Day-2. Секреты не хранятся здесь.
+# Сейчас LLM — локальный Ollama. api_key: ollama не секрет, сервер его не проверяет.
+# Если задан ALFA_LLM_API_KEY, он перекрывает api_key.
+# Эквиваленты make, если make нет:
+#   python -m pytest
+#   python -m alfa.extraction.event_extractor
+#   python -m alfa.kb.index
+#   python -m alfa.eval.run_eval --task extraction --split dev --mock
+#   python -m alfa.eval.run_eval --task search --split dev --noise none
+
+paths:
+  news_fixtures: alfa/data/fixtures/news
+  analytics_fixtures: alfa/data/fixtures/analytics
+  reports: reports
+  cache_db: data/cache/llm_cache.sqlite
+  journal: data/trace/llm_journal.jsonl
+  prompt_log: data/trace/llm_prompts.jsonl
+  embedding_cache: data/cache/embeddings
+  hf_cache: data/models
+
+llm:
+  base_url: http://127.0.0.1:11434/v1
+  api_key_env: ALFA_LLM_API_KEY
+  api_key: ollama
+  # RTX 3050 4 ГБ не загружает qwen2.5:7b в CUDA: раннер падает.
+  # 0 — считать на CPU, иначе OpenAI-совместимый вызов получает HTTP 500.
+  options:
+    num_gpu: 0
+  timeout_s: 180
+  max_attempts: 3
+  backoff_s: 0.4
+  schema_retries: 1
+  cache_enabled: true
+  log_prompts: false
+  roles:
+    extract: qwen2.5:7b
+    interpret: qwen2.5:7b
+    critic: qwen2.5:7b
+
+limits:
+  news_tokens: 2500
+  chars_per_token: 4
+
+chunk:
+  size_tokens: 500
+  overlap_tokens: 80
+
+search:
+  rrf_k: 60
+  default_k: 5
+  embedder: BAAI/bge-m3
+
+news:
+  sources_path: pipelines/news/sources.yaml
+  db_path: data/news/news.sqlite
+  raw_dir: data/news/raw
+  raw_ttl_days: 14
+  min_text_chars: 400
+  max_text_chars: 20000
+  preview_chars: 400
+  workers: 6
+  per_domain_rps: 1
+  dedup:
+    # bge-m3, если пакет и веса модели доступны; иначе конвейер сам переходит на hashing.
+    embedder: bge-m3
+    simhash_max_distance: 3
+    semantic_threshold: 0.92
+    semantic_window_hours: 72
+  health:
+    degraded_errors: 2
+    down_errors: 4
+
+prompts:
+  extract_event: extract_event.v1
+
+data:
+  # stub | pipelines.news
+  # pipelines.news читает sqlite после ingest и проходит тот же контракт NewsSource.
+  impl: stub
+  # stub -> отчёт «данные: заглушка»; real -> «данные: реальные»
+  origin: stub
+
+noise:
+  none: 0.0
+  low: 0.02
+  medium: 0.08
+
+cards:
+  strict_forecast: false

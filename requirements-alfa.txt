@@ -1,0 +1,9 @@
+# Профили и лента. Подключается из requirements-dev.txt.
+numpy==2.5.4
+pandas==3.0.6
+pyarrow==26.0.0
+pydantic==2.14.1
+pyyaml==6.0.3
+rank-bm25==0.2.2
+pymorphy3==2.0.6
+pymorphy3-dicts-ru==2.4.417150.4580142

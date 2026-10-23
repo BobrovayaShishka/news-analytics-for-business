@@ -1,0 +1,57 @@
+# Агентный слой. Критичные поля механизмов — в mechanisms.yaml.
+version: agent-v1
+max_steps: 8
+max_repair: 2
+max_seconds: 25
+max_tokens: 8000
+session_max_tokens: 80000
+session_max_insights: 40
+tool_timeout_s: 10
+prompt_retention_days: 30
+max_questions_per_insight: 1
+max_questions_per_session: 2
+min_priority: regular
+stale_after_days: 60
+context_tokens: 2500
+chars_per_token: 4
+monitor_rate: 0.1
+max_chat_turns: 6
+max_scenarios: 3
+disclaimer: "Аналитика не является инвестиционной рекомендацией"
+roles:
+  plan: critic
+  interpret: interpret
+  repair: interpret
+  critic: critic
+prompt_versions:
+  plan: plan.v1
+  interpret: interpret.v1
+  repair: repair.v1
+  critic: critic.v1
+max_calls:
+  get_profile_view: 3
+  get_group_context: 2
+  get_counterparties: 2
+  get_event: 2
+  search_alfa_analytics: 4
+  search_news: 2
+  external_stats: 1
+  calc: 4
+  explain_relevance: 2
+cost:
+  # Заглушка, не тариф организатора. Нужна, чтобы стоимость из трассы считалась одной формулой.
+  rub_per_1k_tokens: 2.5
+data_policy:
+  # local: закрытый профиль можно отдать локальной модели.
+  # openrouter: в промпт попадает только синтетический профиль и публичный текст.
+  channel: local
+  closed_channels: [organizer]
+  openrouter_allows: [public_text, synthetic_profile]
+  organizer_key_env: ALFA_ORGANIZER_KEY
+base_tools:
+  - {tool: get_event, args: {}, required: true}
+  - {tool: explain_relevance, args: {}, required: true}
+  - {tool: get_profile_view, args: {}, required: true}
+optional_tools:
+  - {tool: search_news, args: {}}
+  - {tool: external_stats, args: {indicator: cpi}}

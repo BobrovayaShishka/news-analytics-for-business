@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://news-analytics-for-business/schemas/bank_chunk.schema.json",
+  "title": "BankChunk",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_id", "title", "published_at", "page", "text"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "source_id": { "type": "string" },
+    "title": { "type": "string" },
+    "published_at": { "type": "string" },
+    "page": { "type": "integer", "minimum": 1 },
+    "text": { "type": "string", "minLength": 1 },
+    "themes": { "type": "array", "items": { "type": "string" } }
+  }
+}

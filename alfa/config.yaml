@@ -1,0 +1,75 @@
+# Сборка профилей, читает alfa.settings. Новости и LLM — в alfa/config/config.yaml.
+# Пути от корня репозитория, каталог данных — data/.
+inputs:
+  companies: data/df_Uid_data_hack.csv
+  payments: data/df_Uid_payment_hack.csv
+revenue:
+  unit: RUB
+  unit_confirmed: false
+  unknown_sentinels:
+  - 1000.0
+  non_positive_unknown: true
+age_scale:
+  map:
+    0-3: 0
+    4-7: 1
+    8-15: 2
+    16-25: 3
+workers_scale:
+  map:
+    менее 15: 0
+    16-100: 1
+    101-250: 2
+    более 251: 3
+fx:
+  country_separators:
+  - ','
+  - ;
+  - /
+size_class:
+  classes:
+  - S1
+  - S2
+  - S3
+  - S4
+  - S5
+  quantiles:
+  - 0.2
+  - 0.4
+  - 0.6
+  - 0.8
+payments:
+  winsorize:
+    method: p99
+  hubs:
+    percentile: 99.9
+    exclude_hubs: true
+reliability:
+  min_edges: 8
+  medium_known_share: 0.3
+  high_known_share: 0.7
+structurally_missing:
+- debt_rate_type
+- debt_amount
+- debt_maturity
+- fx_revenue_share
+- fx_expense_share
+ignored_columns:
+- AMOUNT_WORKERS_SPARK_GRADATION
+- NEGATIVEMARK
+client_types:
+- CLIENT
+- PROSPECT
+- CLOSE_CLIENT
+outputs:
+  profiles: data/features/profiles.parquet
+  graph_features: data/features/graph_features.parquet
+  stats: data/features/build_stats.json
+  trace: data/trace/access.jsonl
+computed:
+  size_edges:
+  - 198059.2
+  - 13628693.8
+  - 73591452.0
+  - 388097439.40000004
+  pay_amt_p99: 118966069.99999867

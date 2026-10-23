@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://news-analytics-for-business/schemas/client_profile.schema.json",
+  "title": "ClientProfile",
+  "description": "Профиль клиента для разработки и демо. Поля выгрузки и сценарные поля различаются по origin.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "company_id",
+    "display_name",
+    "industry",
+    "region",
+    "credit_load",
+    "fx",
+    "foreign_trade",
+    "seasonality",
+    "counterparties",
+    "alfa_products",
+    "extract",
+    "demo_user",
+    "synthetic_fields"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "company_id": { "type": "string" },
+    "display_name": { "type": "string" },
+    "demo_contrast": { "type": "string" },
+    "industry": { "$ref": "#/$defs/industry" },
+    "region": { "$ref": "#/$defs/region" },
+    "credit_load": { "$ref": "#/$defs/credit_load" },
+    "fx": { "$ref": "#/$defs/fx" },
+    "foreign_trade": { "$ref": "#/$defs/foreign_trade" },
+    "seasonality": { "$ref": "#/$defs/seasonality" },
+    "counterparties": { "$ref": "#/$defs/counterparties" },
+    "alfa_products": { "$ref": "#/$defs/alfa_products" },
+    "extract": { "$ref": "#/$defs/extract" },
+    "demo_user": { "$ref": "#/$defs/demo_user" },
+    "synthetic_fields": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "origin": { "enum": ["observed", "synthetic_demo", "inferred_from_payment_direction"] },
+    "industry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "okved_code", "okved_name", "okved2", "label"],
+      "properties": {
+        "origin": { "const": "observed" },
+        "okved_code": { "type": "string" },
+        "okved_name": { "type": "string" },
+        "okved2": { "type": "string" },
+        "label": { "type": "string" }
+      }
+    },
+    "region": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "region", "city"],
+      "properties": {
+        "origin": { "const": "observed" },
+        "region": { "type": "string" },
+        "city": { "type": "string" }
+      }
+    },
+    "credit_load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "debt_to_capital_share", "primary_rate_type", "instruments", "note"],
+      "properties": {
+        "origin": { "const": "synthetic_demo" },
+        "debt_to_capital_share": { "type": "number", "minimum": 0, "maximum": 1 },
+        "primary_rate_type": { "enum": ["floating", "fixed", "mixed", "none"] },
+        "instruments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["product", "present_in_extract", "share_of_debt", "rate_type"],
+            "properties": {
+              "product": { "enum": ["loan", "leasing"] },
+              "present_in_extract": { "type": "boolean" },
+              "share_of_debt": { "type": "number", "minimum": 0, "maximum": 1 },
+              "rate_type": { "enum": ["floating", "fixed"] },
+              "spread_over_key_rate_pp": { "type": ["number", "null"] },
+              "fixed_rate_percent": { "type": ["number", "null"] }
+            }
+          }
+        },
+        "contingent_guarantees_to_revenue": { "type": ["number", "null"] },
+        "note": { "type": "string" }
+      }
+    },
+    "fx": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "revenue_fx_share", "expense_fx_share", "currencies", "note"],
+      "properties": {
+        "origin": { "const": "synthetic_demo" },
+        "revenue_fx_share": { "type": "number", "minimum": 0, "maximum": 1 },
+        "expense_fx_share": { "type": "number", "minimum": 0, "maximum": 1 },
+        "currencies": { "type": "array", "items": { "type": "string" } },
+        "note": { "type": "string" }
+      }
+    },
+    "foreign_trade": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fts_flag",
+        "countries_observed",
+        "direction_in_extract",
+        "import_cost_share",
+        "export_revenue_share"
+      ],
+      "properties": {
+        "fts_flag": { "type": "boolean" },
+        "countries_observed": { "type": "array", "items": { "type": "string" } },
+        "direction_in_extract": { "const": "unknown" },
+        "import_cost_share": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["origin", "value"],
+          "properties": {
+            "origin": { "const": "synthetic_demo" },
+            "value": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "export_revenue_share": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["origin", "value"],
+          "properties": {
+            "origin": { "const": "synthetic_demo" },
+            "value": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "note": { "type": "string" }
+      }
+    },
+    "seasonality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "pattern", "peak_months", "trough_months", "note"],
+      "properties": {
+        "origin": { "const": "synthetic_demo" },
+        "pattern": { "type": "string" },
+        "peak_months": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1, "maximum": 12 }
+        },
+        "trough_months": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1, "maximum": 12 }
+        },
+        "note": { "type": "string" }
+      }
+    },
+    "counterparties": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outbound_count", "inbound_count", "top", "payment_coverage_note"],
+      "properties": {
+        "outbound_count": { "type": "integer" },
+        "inbound_count": { "type": "integer" },
+        "top": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "direction", "amount_rub", "pay_cnt", "in_company_table", "origin"],
+            "properties": {
+              "id": { "type": "string" },
+              "direction": { "enum": ["outbound", "inbound"] },
+              "amount_rub": { "type": "number" },
+              "pay_cnt": { "type": "integer" },
+              "in_company_table": { "type": "boolean" },
+              "okved_code": { "type": ["string", "null"] },
+              "okved_name": { "type": ["string", "null"] },
+              "region": { "type": ["string", "null"] },
+              "origin": { "const": "observed" }
+            }
+          }
+        },
+        "payment_coverage_note": { "type": "string" }
+      }
+    },
+    "alfa_products": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "rko", "guarantees", "loans", "leasing", "deposits", "payroll", "factoring", "active"],
+      "properties": {
+        "origin": { "const": "observed" },
+        "rko": { "type": "boolean" },
+        "guarantees": { "type": "boolean" },
+        "loans": { "type": "boolean" },
+        "leasing": { "type": "boolean" },
+        "deposits": { "type": "boolean" },
+        "payroll": { "type": "boolean" },
+        "factoring": { "type": "boolean" },
+        "active": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "extract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "revenue_rub", "client_type", "group_size", "market_position"],
+      "properties": {
+        "origin": { "const": "observed" },
+        "revenue_rub": { "type": "number" },
+        "client_type": { "enum": ["CLIENT", "PROSPECT", "CLOSE_CLIENT"] },
+        "employees_fns": { "type": "string" },
+        "age_band": { "type": "string" },
+        "eco_stage": { "type": "string" },
+        "ownership": { "type": "string" },
+        "key_owner_mark": { "type": "boolean" },
+        "group_id": { "type": "string" },
+        "group_size": { "type": "integer" },
+        "market_position": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "okved2", "rank", "peers", "note"],
+          "properties": {
+            "method": { "const": "revenue_rank_within_okved2" },
+            "okved2": { "type": "string" },
+            "rank": { "type": "integer" },
+            "peers": { "type": "integer" },
+            "note": { "type": "string" }
+          }
+        }
+      }
+    },
+    "demo_user": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["login", "password", "role", "role_source"],
+      "properties": {
+        "login": { "type": "string" },
+        "password": { "type": "string" },
+        "role": { "type": "string" },
+        "role_source": { "const": "demo_persona" }
+      }
+    }
+  }
+}
