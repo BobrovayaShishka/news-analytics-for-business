@@ -1,0 +1,137 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+.cython_cache/
+hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+pytest-cache-files-*/
+pytestdebug.log
+
+# --- Virtual environments ---
+.venv/
+venv/
+ENV/
+env/
+.env/
+.virtualenv/
+virtualenv/
+
+# --- Secrets & local env ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials.json
+service-account*.json
+
+# --- IDE / editors ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.iml
+.project
+.pydevproject
+.settings/
+.cursor/
+!.cursor/rules/
+
+# --- OS ---
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- Project data (bank / users / derived) ---
+# Ignore contents, allow only placeholder docs (parent dir must not be fully ignored).
+/data/**
+!/data/.gitkeep
+!/data/README.md
+/clients/**
+!/clients/.gitkeep
+/alfa-analytics/**
+!/alfa-analytics/.gitkeep
+/fixtures/**
+!/fixtures/.gitkeep
+
+# Explicit sensitive / large artifacts anywhere
+*.csv
+*.parquet
+*.feather
+*.pkl
+*.pickle
+*.joblib
+*.sqlite
+*.sqlite3
+*.db
+*.pdf
+
+# Model weights & HuggingFace caches
+**/models/
+**/.cache/
+**/huggingface/
+**/transformers_cache/
+
+# Runtime / experiment outputs
+reports/
+**/runs/
+**/trace/
+**/corpus/
+**/cache/
+_probe_out.txt
+_brief_extract.txt
+*.log
+logs/
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# Docker local overrides
+docker-compose.override.yml
+
+# Packaging / install leftovers
+*.manifest
+*.spec
