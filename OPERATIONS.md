@@ -52,6 +52,7 @@
 - Версии: `version` в YAML (`mechanisms-v2`, `agent-v2`, …) и `prompt_versions`.
 - Конфиг без секретов; ключи только из env (`ALFA_LLM_API_KEY`, `ALFA_ORGANIZER_KEY`).
 - Образ новостного контура — `Dockerfile` + `requirements-news.txt`; полный контур — `requirements-dev.txt`.
+- Архитектура безопасности AI-слоя (сессия, whitelist tools, журналы, `data_policy`) — [SECURITY.md](SECURITY.md).
 
 ### Роли сопровождения
 

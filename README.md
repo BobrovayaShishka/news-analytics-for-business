@@ -73,4 +73,6 @@ python -m alfa.ranking.bench --smoke
 
 Масштабирование на отрасли, типы клиентов, источники данных и сопровождение (мониторинг, карточки, новый механизм без правок Python) — в [OPERATIONS.md](OPERATIONS.md).
 
+Безопасная работа AI-компонентов (доступ, маскирование, журнал инструментов, ограничения и допущения прототипа) — в [SECURITY.md](SECURITY.md).
+
 Если установлен make: `make profiles`, `make ingest`, `make feed`, `make test`.
