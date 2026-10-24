@@ -1,7 +1,7 @@
 # Карта чувствительности. Коды event_types — из taxonomy.yaml.
 # Пример в постановке с fx_rate/sanctions здесь назван так, как в таксономии: fx, sanctions_trade.
 # requires: признак должен быть известен. Неизвестное не даёт срабатывания.
-version: sensitivity-v1
+version: sensitivity-v2
 
 mechanisms:
   - debt_service_cost
@@ -40,6 +40,16 @@ rules:
     mechanism_id: deposit_yield
     requires: [has_deposit]
     confidence_base: 0.7
+
+  # Крупный по выручке внутри ОКВЭД-2: макрорешение по деньгам материально для оборота.
+  # market_rank — ранг среди клиентов банка, не доля рынка РФ (share_percent в данных нет).
+  - rule_id: key_rate__market_position
+    event_types: [key_rate]
+    when: {feature: market_rank, lte: 20}
+    weight: 0.5
+    mechanism_id: debt_service_cost
+    requires: [market_rank]
+    confidence_base: 0.55
 
   - rule_id: fx__fts
     event_types: [fx]

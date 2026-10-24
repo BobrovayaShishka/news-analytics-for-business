@@ -136,6 +136,17 @@ class Fact(BaseModel):
     subject: str | None = None
     evidence_span: str = ""
     unverified: bool = False
+    # Локатор / обогащение при сборке события, get_event, merge echo.
+    # Extraction LLM эти поля не заполняет — остаются default.
+    id: str | None = None
+    url: str | None = None
+    char_start: int | None = None
+    char_end: int | None = None
+    source_ids: list[str] = Field(default_factory=list)
+    title: str = ""
+    publisher: str | None = None
+    echo_publishers: list[str] = Field(default_factory=list)
+    echo_urls: list[str] = Field(default_factory=list)
 
 
 class SpanNote(BaseModel):

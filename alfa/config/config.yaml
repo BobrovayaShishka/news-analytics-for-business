@@ -14,6 +14,7 @@
 paths:
   news_fixtures: alfa/data/fixtures/news
   analytics_fixtures: alfa/data/fixtures/analytics
+  external_fixtures: alfa/data/fixtures/external
   reports: reports
   cache_db: data/cache/llm_cache.sqlite
   journal: data/trace/llm_journal.jsonl

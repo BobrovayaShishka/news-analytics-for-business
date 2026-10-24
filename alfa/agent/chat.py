@@ -1,4 +1,11 @@
-"""Уточняющие вопросы по сохранённому инсайту."""
+"""Уточнения по сохранённому инсайту (не агентный цикл generate).
+
+By design без LLM на классификацию и черновик ответа — даже при llm_enabled=True:
+intent и срезы (cut) идут через regex и шаблоны Toolkit, чтобы offline и
+llm_enabled=False вели себя одинаково, а refuse/UID оставались детерминированными.
+Critic на follow-up может вызвать LLM только если runtime.llm_enabled (как в verify).
+Контекст берётся из InsightStore, не из MemorySaver.
+"""
 
 from __future__ import annotations
 
@@ -253,8 +260,11 @@ def _model_anchor(state: dict) -> dict[str, Any]:
 
 def _known_source(state: dict) -> str:
     sources = (state.get("evidence") or {}).get("sources") or {}
-    if "fact:f1" in sources:
-        return "fact:f1"
+    facts = [key for key in sources if str(key).startswith("fact:") and "@" not in str(key)]
+    if facts:
+        # Стабильный порядок: f1, f2, …
+        facts.sort(key=lambda key: (len(str(key)), str(key)))
+        return str(facts[0])
     for key in sources:
         if str(key).startswith("fact:"):
             return str(key)

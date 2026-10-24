@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from alfa.ranking.models import RelevanceSignal as RelevanceSignalView
+
 
 class Session(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -86,6 +88,7 @@ class PlanDraft(BaseModel):
 
     steps: list[PlanStepDraft]
     stop_conditions: list[str] = Field(default_factory=list)
+    reasoning: str = ""
 
 
 class RepairDraft(BaseModel):
@@ -127,6 +130,8 @@ class RelevanceView(BaseModel):
     mechanism_ids: list[str] = Field(default_factory=list)
     rules: list[str] = Field(default_factory=list)
     above_threshold: bool = False
+    summary: str = ""
+    signals: list[RelevanceSignalView] = Field(default_factory=list)
 
 
 class UserFact(BaseModel):
@@ -172,6 +177,21 @@ class VerificationView(BaseModel):
     layer_violations: list[str] = Field(default_factory=list)
 
 
+class SourceRef(BaseModel):
+    """Первоисточник вывода: url и позиция в тексте, не только id ссылки."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    type: Literal["external_news", "bank_analytics", "company_data", "calc", "external_stats"]
+    title: str
+    locator: str | None = None
+    url: str | None = None
+    evidence_span: str | None = None
+    char_start: int | None = None
+    char_end: int | None = None
+
+
 class Insight(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -201,6 +221,7 @@ class Insight(BaseModel):
     pending_question: PendingQuestion | None = None
     flags: list[str] = Field(default_factory=list)
     disclaimer: str
+    sources: list[SourceRef] = Field(default_factory=list)
 
 
 class GenerateRequest(BaseModel):

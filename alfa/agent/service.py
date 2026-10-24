@@ -27,10 +27,16 @@ from alfa.agent.traceview import build_trace_view
 from alfa.core.config import resolve_path
 from alfa.ranking.engine import as_utc
 from alfa.ranking.models import RankEvent
+from alfa.ranking.open_world import guess_event_type
 
 
 class InsightService:
-    """Методы совпадают с HTTP-контрактом: generate, get, answer, chat, trace, feedback, check_news."""
+    """HTTP-контракт: generate, get, answer, chat, trace, feedback, check_news.
+
+    Единственная долгоживущая память — InsightStore (инсайт, state, journal, ответы).
+    Граф LangGraph без checkpointer: каждый generate/answer — новый invoke; pause/resume
+    на pending_question идёт через store, не через thread_id MemorySaver.
+    """
 
     def __init__(
         self,
@@ -144,7 +150,7 @@ class InsightService:
         event_id = "adhoc_" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
         event = RankEvent(
             event_id=event_id,
-            event_type=_guess_type(text),
+            event_type=guess_event_type(text),
             published_at=as_utc(session.as_of or self.ranking.as_of),
             title=title or "Проверка новости",
             text=text,
@@ -210,8 +216,7 @@ class InsightService:
 
     def _invoke(self, state: dict) -> dict:
         self.toolkit.reset()
-        thread = f"{state['trace_id']}:{uuid.uuid4().hex[:8]}"
-        return self.graph.invoke(state, {"recursion_limit": 40, "configurable": {"thread_id": thread}})
+        return self.graph.invoke(state, {"recursion_limit": 40})
 
     def _initial(self, session: Session, event_id: str, client_id: str, role: str) -> dict:
         trace_id = uuid.uuid4().hex
@@ -234,7 +239,7 @@ class InsightService:
             "explanation": {},
             "plan": {},
             "views": {},
-            "evidence": {"event": {}, "cards": [], "news": [], "stats": [], "sources": {}},
+            "evidence": {"event": {}, "cards": [], "news": [], "stats": [], "sources": {}, "locators": {}},
             "calc_results": [],
             "user_provided": list(self.store.answers_for(session.user_id, client_id).values()),
             "draft": {},
@@ -247,6 +252,8 @@ class InsightService:
             "started": time.perf_counter(),
             "tokens": 0,
             "questions_asked": 0,
+            "gathered_keys": [],
+            "replan_round": 0,
             "journal": [],
         }
 
@@ -273,23 +280,6 @@ class InsightService:
 
 def _priority_rank(value: str) -> int:
     return {"low": 0, "regular": 1, "urgent": 2}.get(value, -1)
-
-
-def _guess_type(text: str) -> str:
-    lowered = text.lower()
-    checks = (
-        ("золот", "commodities_gold"),
-        ("курс", "fx"),
-        ("доллар", "fx"),
-        ("зарплат", "labor"),
-        ("мрот", "labor"),
-        ("инфляц", "inflation"),
-        ("ставк", "key_rate"),
-    )
-    for needle, event_type in checks:
-        if needle in lowered:
-            return event_type
-    return "other_econ"
 
 
 def _catalog_ranking():

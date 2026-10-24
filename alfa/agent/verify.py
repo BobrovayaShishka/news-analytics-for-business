@@ -187,15 +187,23 @@ def verify_stage1(draft: dict | None, state: dict, config: AgentConfig) -> dict[
                 issues.append(_issue(claim_id, "date", "blocking", "дата не найдена в источнике"))
         if layer == "alfa":
             refs = list(claim.get("refs") or [])
-            if not any(ref.startswith("card:") and ref.split(":", 1)[1] in cards for ref in refs):
+            # card_id в фикстурах уже card:doc:n; старый короткий id — card-key.
+            def _card_for(ref: str):
+                key = str(ref)
+                if key in cards:
+                    return cards[key]
+                if key.startswith("card:"):
+                    return cards.get(key.split(":", 1)[1])
+                return None
+
+            if not any(str(ref).startswith("card:") and _card_for(str(ref)) is not None for ref in refs):
                 issues.append(_issue(claim_id, "layer_violation", "blocking", "alfa только из карточки"))
             if "альфа" not in text.lower():
                 issues.append(_issue(claim_id, "layer_violation", "blocking", "нет атрибуции Альфа-Банку"))
             if not textcheck._dates_in_text(text):
                 issues.append(_issue(claim_id, "layer_violation", "blocking", "у карточки нет даты"))
             for ref in refs:
-                card_id = ref.split(":", 1)[1] if ref.startswith("card:") else ""
-                card = cards.get(card_id)
+                card = _card_for(str(ref))
                 if card and card.get("stale"):
                     issues.append(_issue(claim_id, "stale", "minor", "карточка старше порога"))
         if layer == "model":

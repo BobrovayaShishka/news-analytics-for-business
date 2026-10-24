@@ -17,6 +17,7 @@ SCORING_PATH = CONFIG_DIR / "scoring.yaml"
 SENSITIVITY_PATH = CONFIG_DIR / "sensitivity.yaml"
 SYNONYM_PATH = CONFIG_DIR / "entity_synonyms.yaml"
 THEME_PATH = CONFIG_DIR / "okved_to_theme.yaml"
+OPEN_WORLD_PATH = CONFIG_DIR / "open_world.yaml"
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -91,25 +92,25 @@ class RankingConfig:
         return str(labels.get(code, code))
 
 
+def rule_from_raw(item: dict[str, Any]) -> RuleSpec:
+    """Единый парсер правила из sensitivity.yaml / open_world bridge_rules."""
+    boost = item.get("entity_boost")
+    return RuleSpec(
+        rule_id=str(item["rule_id"]),
+        event_types=frozenset(str(code) for code in item.get("event_types") or []),
+        when=dict(item.get("when") or {}),
+        weight=float(item["weight"]),
+        mechanism_id=str(item["mechanism_id"]),
+        requires=tuple(str(name) for name in item.get("requires") or []),
+        confidence_base=float(item.get("confidence_base", 1.0)),
+        entity_themes=frozenset(str(code) for code in item.get("entity_themes") or []),
+        entity_boost=dict(boost) if isinstance(boost, dict) else None,
+        min_reliability=(str(item["min_reliability"]) if item.get("min_reliability") else None),
+    )
+
+
 def _rules(raw: dict[str, Any]) -> list[RuleSpec]:
-    specs: list[RuleSpec] = []
-    for item in raw.get("rules") or []:
-        boost = item.get("entity_boost")
-        specs.append(
-            RuleSpec(
-                rule_id=str(item["rule_id"]),
-                event_types=frozenset(str(code) for code in item.get("event_types") or []),
-                when=dict(item.get("when") or {}),
-                weight=float(item["weight"]),
-                mechanism_id=str(item["mechanism_id"]),
-                requires=tuple(str(name) for name in item.get("requires") or []),
-                confidence_base=float(item.get("confidence_base", 1.0)),
-                entity_themes=frozenset(str(code) for code in item.get("entity_themes") or []),
-                entity_boost=dict(boost) if isinstance(boost, dict) else None,
-                min_reliability=(str(item["min_reliability"]) if item.get("min_reliability") else None),
-            )
-        )
-    return specs
+    return [rule_from_raw(item) for item in raw.get("rules") or []]
 
 
 def _version(label: str, paths: list[Path]) -> str:
@@ -129,7 +130,10 @@ def load_ranking_config() -> RankingConfig:
         synonyms=synonyms,
         themes=themes,
         rules=_rules(sensitivity),
-        config_version=_version(str(sensitivity.get("version", "sensitivity")), [SENSITIVITY_PATH, SYNONYM_PATH, THEME_PATH]),
+        config_version=_version(
+            str(sensitivity.get("version", "sensitivity")),
+            [SENSITIVITY_PATH, SYNONYM_PATH, THEME_PATH, OPEN_WORLD_PATH],
+        ),
         weight_version=_version(str(scoring.get("version", "scoring")), [SCORING_PATH]),
         reasons={str(key): str(value) for key, value in (scoring.get("reasons") or {}).items()},
     )

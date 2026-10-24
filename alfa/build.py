@@ -10,7 +10,7 @@ import pandas as pd
 
 from alfa.access import reload
 from alfa.graph_features import build_graph_records, clean_payments
-from alfa.profile_builder import apply_profile_size, build_profiles, known_revenues
+from alfa.profile_builder import apply_market_position, apply_profile_size, build_profiles, known_revenues
 from alfa.settings import ROOT, load_profile_config, output_path, profile_config_hash, save_config
 
 log = logging.getLogger("alfa.build")
@@ -65,6 +65,7 @@ def build_all() -> dict:
     profiles, profile_stats = build_profiles(companies, config)
     config = _ensure_computed(config, edges, profiles)
     version = profile_config_hash(config)
+    apply_market_position(profiles)
     apply_profile_size(profiles, config, version)
     profile_ids = {item["client_id"] for item in profiles}
     seen = (set(payments["PAYER"]) | set(payments["BENEFICIARY"])) & profile_ids

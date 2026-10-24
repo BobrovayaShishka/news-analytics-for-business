@@ -123,6 +123,13 @@ def profile_sentence(profile: dict) -> str:
         parts.append("Выручка неизвестна.")
     else:
         parts.append(f"Выручка: {attributes['revenue']:.0f} руб. Класс размера: {attributes['size_class']}.")
+    position = profile.get("market_position") or {}
+    if position.get("rank") is not None and position.get("peers") is not None:
+        parts.append(
+            f"Положение в ОКВЭД {position.get('okved2') or 'не указан'}: "
+            f"ранг {position['rank']} из {position['peers']} по выручке среди клиентов банка. "
+            "Доля рынка неизвестна."
+        )
     present = [name.removeprefix("has_") for name, value in products.items() if value is True]
     absent = [name.removeprefix("has_") for name, value in products.items() if value is False]
     if present:
@@ -163,6 +170,57 @@ def known_revenues(profiles: list[dict]) -> list[float]:
             continue
         values.append(float(revenue))
     return values
+
+
+def apply_market_position(profiles: list[dict]) -> None:
+    """Ранг по выручке внутри ОКВЭД-2. Доля рынка не выводится — в данных её нет."""
+    buckets: dict[str, list[tuple[int, float, str]]] = {}
+    for index, profile in enumerate(profiles):
+        attributes = profile["attributes"]
+        code = okved_section(attributes.get("okved_code"))
+        revenue = attributes.get("revenue")
+        eligible = (
+            not profile["conflicting_records"]
+            and not attributes.get("revenue_unknown")
+            and revenue is not None
+            and code is not None
+        )
+        if eligible:
+            buckets.setdefault(code, []).append((index, float(revenue), str(profile["client_id"])))
+        profile["market_position"] = {
+            "method": "revenue_rank_within_okved2",
+            "okved2": code,
+            "rank": None,
+            "peers": None,
+            "share_percent": None,
+            "note": (
+                "Выручка или ОКВЭД неизвестны — ранг не считаем. Доля рынка в выгрузке отсутствует."
+                if not eligible
+                else "Ранг по выручке среди клиентов банка с тем же ОКВЭД-2. Доля рынка в выгрузке отсутствует."
+            ),
+        }
+
+    for code, members in buckets.items():
+        members.sort(key=lambda item: (-item[1], item[2]))
+        peers = len(members)
+        rank = 0
+        previous: float | None = None
+        for offset, (index, revenue, _client_id) in enumerate(members):
+            if previous is None or revenue != previous:
+                rank = offset + 1
+                previous = revenue
+            profile = profiles[index]
+            profile["market_position"] = {
+                "method": "revenue_rank_within_okved2",
+                "okved2": code,
+                "rank": rank,
+                "peers": peers,
+                "share_percent": None,
+                "note": (
+                    f"Ранг {rank} из {peers} по выручке внутри ОКВЭД {code} "
+                    "среди клиентов банка. Доля рынка в выгрузке отсутствует."
+                ),
+            }
 
 
 def apply_profile_size(profiles: list[dict], config: dict, version: str) -> None:

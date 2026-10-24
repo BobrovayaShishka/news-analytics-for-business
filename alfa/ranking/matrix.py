@@ -339,6 +339,19 @@ def assemble_matrix(
     known["workers_class"] = np.fromiter((row.workers_class is not None for row in rows), dtype=bool, count=n)
     values["workers_class"] = workers
 
+    market_rank = np.array(
+        [np.nan if row.market_rank is None else float(row.market_rank) for row in rows],
+        dtype=np.float32,
+    )
+    known["market_rank"] = np.fromiter((row.market_rank is not None for row in rows), dtype=bool, count=n)
+    values["market_rank"] = market_rank
+    market_peers = np.array(
+        [np.nan if row.market_peers is None else float(row.market_peers) for row in rows],
+        dtype=np.float32,
+    )
+    known["market_peers"] = np.fromiter((row.market_peers is not None for row in rows), dtype=bool, count=n)
+    values["market_peers"] = market_peers
+
     region_known = np.fromiter((bool(row.region) for row in rows), dtype=bool, count=n)
     region_code = np.array(
         [region_index[row.region] if row.region in region_index else -1 for row in rows],
@@ -628,6 +641,10 @@ def row_from_built_profile(profile: dict, graph: dict | None, config: RankingCon
     if size in {None, "", "unknown"}:
         size = None
     graph_bits = _graph_bits(graph)
+    position = profile.get("market_position") or {}
+    market_rank = position.get("rank")
+    market_peers = position.get("peers")
+    market_okved2 = position.get("okved2")
     return ClientRow(
         client_id=str(profile["client_id"]),
         client_type="CLIENT",
@@ -646,6 +663,9 @@ def row_from_built_profile(profile: dict, graph: dict | None, config: RankingCon
         size_class=size,
         workers_class=attributes.get("workers_class"),
         revenue=attributes.get("revenue"),
+        market_rank=int(market_rank) if market_rank is not None else None,
+        market_peers=int(market_peers) if market_peers is not None else None,
+        market_okved2=str(market_okved2) if market_okved2 else None,
         fx_exposure=exposure,
         fx_confidence=fx.get("confidence"),
         fts_countries=countries,
@@ -703,6 +723,10 @@ def row_from_demo(payload: dict, config: RankingConfig) -> ClientRow:
         countries = [country_code(str(item), config) for item in trade.get("countries_observed") or []]
     graph = _demo_graph(payload)
     revenue = extract.get("revenue_rub")
+    position = extract.get("market_position") or {}
+    market_rank = position.get("rank")
+    market_peers = position.get("peers")
+    market_okved2 = position.get("okved2")
     return ClientRow(
         client_id=str(payload["company_id"]),
         client_type=str(extract.get("client_type") or "CLIENT"),
@@ -720,6 +744,9 @@ def row_from_demo(payload: dict, config: RankingConfig) -> ClientRow:
         size_class=size_from_revenue(float(revenue) if revenue is not None else None),
         workers_class=_workers(extract.get("employees_fns")),
         revenue=float(revenue) if revenue is not None else None,
+        market_rank=int(market_rank) if market_rank is not None else None,
+        market_peers=int(market_peers) if market_peers is not None else None,
+        market_okved2=str(market_okved2) if market_okved2 else None,
         fx_exposure=exposure,
         fx_confidence="high" if countries else None,
         fts_countries=countries,

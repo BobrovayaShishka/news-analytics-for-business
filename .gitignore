@@ -97,6 +97,16 @@ $RECYCLE.BIN/
 /fixtures/**
 !/fixtures/.gitkeep
 
+# Local fixtures, eval sets, tests, example payloads — never commit
+alfa/data/fixtures/
+alfa/ranking/fixtures/
+alfa/eval/
+alfa/tests/
+schemas/examples/
+**/journal.jsonl
+**/llm_journal.jsonl
+**/store.json
+
 # Explicit sensitive / large artifacts anywhere
 *.csv
 *.parquet

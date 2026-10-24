@@ -49,7 +49,7 @@ questions:
 mechanisms:
   debt_service_cost:
     directness: direct
-    sensitivity_requires: [has_credit, has_leasing, size_class]
+    sensitivity_requires: [has_credit, has_leasing, market_rank, size_class]
     critical_fields: [debt_rate_type]
     optional_fields: [debt_amount, debt_maturity]
     changes_conclusion: [debt_rate_type]
@@ -128,9 +128,9 @@ mechanisms:
     changes_conclusion: []
     tools:
       - {tool: get_profile_view, args: {}}
-      - {tool: search_alfa_analytics, args: {topic: from_event}}
-    optional_tools:
       - {tool: get_counterparties, args: {direction: both}}
+      - {tool: search_alfa_analytics, args: {topic: from_event}}
+    optional_tools: []
 
   commodity_revenue:
     directness: direct

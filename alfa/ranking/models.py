@@ -59,6 +59,7 @@ class ScoredPair(BaseModel):
     graph_signal: SignalSource | None = None
     analytics_refs: list[str] = Field(default_factory=list)
     above_threshold: bool = False
+    summary: str = ""
 
 
 class FeedItem(BaseModel):
@@ -74,6 +75,7 @@ class FeedItem(BaseModel):
     analytics_refs: list[str]
     flags: list[str]
     hypotheses: list[LinkHypothesis] = Field(default_factory=list)
+    summary: str = ""
 
 
 class Feed(BaseModel):
@@ -87,6 +89,14 @@ class Feed(BaseModel):
     config_version: str = ""
     weight_version: str = ""
     role: str | None = None
+
+
+class RelevanceSignal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    feature: str
+    value: Any = None
+    reason: str
 
 
 class Explanation(BaseModel):
@@ -111,6 +121,8 @@ class Explanation(BaseModel):
     hypotheses: list[LinkHypothesis] = Field(default_factory=list)
     eligible: bool = False
     above_threshold: bool = False
+    summary: str = ""
+    signals: list[RelevanceSignal] = Field(default_factory=list)
 
 
 @dataclass
@@ -135,6 +147,9 @@ class ClientRow:
     size_class: str | None = None
     workers_class: int | None = None
     revenue: float | None = None
+    market_rank: int | None = None
+    market_peers: int | None = None
+    market_okved2: str | None = None
     fx_exposure: str | None = None
     fx_confidence: str | None = None
     fts_countries: list[str] | None = None
@@ -171,6 +186,12 @@ class RankEvent:
     entities: list[dict[str, str]] = field(default_factory=list)
     title: str = ""
     text: str = ""
+    url: str = ""
+    source: str = ""
+    facts: list[dict[str, Any]] = field(default_factory=list)
+    risks: list[dict[str, str]] = field(default_factory=list)
+    opportunities: list[dict[str, str]] = field(default_factory=list)
+    echo_sources: list[str] = field(default_factory=list)
 
     def signature(self) -> str:
         stamp = self.published_at.isoformat()

@@ -1,43 +1,42 @@
-"""Инструменты только на чтение. client_id берётся из сессии, не из аргумента модели."""
+"""Инструменты только на чтение. client_id берётся из сессии, не из аргумента модели.
+
+Инструменты вызывает код (gather по плану), модель их не выбирает.
+search_alfa_analytics: гибридный поиск alfa/kb (BM25 + эмбеддинги) по фикстурам аналитики.
+search_news: отбор primary-событий каталога по теме с url и сниппетами.
+external_stats: ряд из фикстур alfa/data/fixtures/external; без ряда — value=None.
+get_event: атомарные факты с evidence_span ⊆ текста, url и char-позициями; эхо сливаются.
+"""
 
 from __future__ import annotations
 
-import re
+import json
 import time
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime
+from functools import lru_cache
 from typing import Any
 
 from alfa.access import session_scope
-from alfa.agent.config import AgentConfig
+from alfa.agent.config import BANK_VIEW_TYPES, AgentConfig
 from alfa.agent.models import ToolResult
 from alfa.agent.security import detect_injection, mask_args, redact_tree, wrap_data
+from alfa.core.config import load_runtime_config, resolve_path
+from alfa.core.grounding import (
+    atomic_facts_from_text,
+    facts_from_extraction,
+    merge_echo_facts,
+    source_text_map,
+    summarize_facts,
+)
 from alfa.core.trace import log_step
+from alfa.kb.index import AnalyticsIndex
+from alfa.kb.search import build_default_index, search_analytics
 from alfa.ranking.engine import age_days, as_utc
 from alfa.settings import load_profile_config
 
-_CARD_TEXT = {
-    "card-key": "11 сентября 2026 года ключевая ставка сохранена на уровне 14%.",
-    "card-fx": "19 октября 2026 года официальный курс составил 82 рубля за доллар.",
-    "card-gold": "10 октября 2026 года котировка золота составила 4400 долларов за унцию.",
-    "card-labor": "15 октября 2026 года ориентир по зарплатам обновлён.",
-    "card-infl": "1 октября 2026 года обзор фиксирует инфляционный фон.",
-    "card-tax": "12 октября 2026 года налоговый режим остаётся в фокусе обзора.",
-    "card-demand": "11 октября 2026 года оборот розницы остаётся повышенным.",
-    "card-sanc": "16 октября 2026 года ограничения внешней торговли сохраняются.",
-}
-_CARD_META = {
-    "card-key": ("policy-rate-20260911", 1, [0.08, 0.1, 0.92, 0.42]),
-    "card-fx": ("fx-20261019", 1, [0.08, 0.1, 0.92, 0.42]),
-    "card-gold": ("gold-aug-2026", 1, [0.08, 0.1, 0.92, 0.42]),
-    "card-labor": ("labor-20261015", 1, [0.08, 0.1, 0.92, 0.42]),
-    "card-infl": ("infl-weekly-20260831", 1, [0.08, 0.1, 0.92, 0.42]),
-    "card-tax": ("tax-20261012", 1, [0.08, 0.1, 0.92, 0.42]),
-    "card-demand": ("consumption-20260805", 1, [0.08, 0.1, 0.92, 0.42]),
-    "card-sanc": ("sanctions-20261016", 1, [0.08, 0.1, 0.92, 0.42]),
-}
+_DEFAULT_BBOX = [0.08, 0.1, 0.92, 0.42]
 _FEATURE_KEYS = (
     "has_credit",
     "has_leasing",
@@ -51,6 +50,9 @@ _FEATURE_KEYS = (
     "size_class",
     "workers_class",
     "revenue",
+    "market_rank",
+    "market_peers",
+    "market_okved2",
     "fx_exposure",
     "fx_confidence",
     "fts_countries",
@@ -61,7 +63,6 @@ _FEATURE_KEYS = (
     "group_size",
     "region",
 )
-_DECIMAL = re.compile(r"\d+[,.]\d+")
 
 
 def _row(ranking: Any, client_id: str):
@@ -69,26 +70,6 @@ def _row(ranking: Any, client_id: str):
         if row.client_id == client_id:
             return row
     return None
-
-
-def _split_sentences(raw: str) -> list[str]:
-    protected: list[str] = []
-
-    def hide(match: re.Match[str]) -> str:
-        protected.append(match.group(0))
-        return f"\u0000{len(protected) - 1}\u0000"
-
-    shielded = _DECIMAL.sub(hide, raw or "")
-    parts = re.split(r"[.!?]+", shielded)
-    output: list[str] = []
-    for part in parts:
-        text = part
-        for index, token in enumerate(protected):
-            text = text.replace(f"\u0000{index}\u0000", token)
-        text = text.strip()
-        if text:
-            output.append(text)
-    return output
 
 
 def _as_texts(value: Any) -> list[str]:
@@ -107,6 +88,22 @@ def _as_texts(value: Any) -> list[str]:
     return output
 
 
+@lru_cache(maxsize=1)
+def _external_stats_rows() -> list[dict[str, Any]]:
+    cfg = load_runtime_config()
+    directory = resolve_path((cfg.get("paths") or {}).get("external_fixtures") or "alfa/data/fixtures/external")
+    rows: list[dict[str, Any]] = []
+    if not directory.exists():
+        return rows
+    for path in sorted(directory.glob("*.jsonl")):
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+    return rows
+
+
 def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -118,15 +115,30 @@ def _jsonable(value: Any) -> Any:
 
 
 class Toolkit:
-    def __init__(self, ranking: Any, config: AgentConfig, journal_path, clock: Callable[[], datetime] | None = None):
+    def __init__(
+        self,
+        ranking: Any,
+        config: AgentConfig,
+        journal_path,
+        clock: Callable[[], datetime] | None = None,
+        kb_index: AnalyticsIndex | None = None,
+    ):
         self.ranking = ranking
         self.config = config
         self.journal_path = journal_path
         self.clock = clock or (lambda: datetime.now())
         self.calls: Counter[str] = Counter()
+        self._kb_index = kb_index
 
     def reset(self) -> None:
         self.calls = Counter()
+
+    @property
+    def kb_index(self) -> AnalyticsIndex:
+        if self._kb_index is None:
+            # HashingEmbedder: без загрузки bge-m3 на старте агента.
+            self._kb_index = build_default_index(prefer_real=False)
+        return self._kb_index
 
     def call(self, name: str, args: dict[str, Any] | None, state: dict[str, Any]) -> tuple[ToolResult, dict[str, Any]]:
         started = time.perf_counter()
@@ -321,27 +333,63 @@ class Toolkit:
             return ToolResult(ok=False, error="event_not_found")
         raw = event.text or event.title or ""
         suspicious = detect_injection(raw)
-        kept = [part for part in _split_sentences(raw) if not detect_injection(part)]
-        claim = ". ".join(kept).strip() or (event.title or "Событие получено")
-        if claim and not claim.endswith("."):
-            claim += "."
-        claim, _hits = redact_tree(claim)
+        url = str(getattr(event, "url", "") or "") or None
+        publisher = str(getattr(event, "source", "") or "") or None
+        title = str(event.title or "")
+        stored = list(getattr(event, "facts", None) or [])
+        if stored and any(item.get("evidence_span") or item.get("claim") for item in stored if isinstance(item, dict)):
+            facts = facts_from_extraction(
+                stored,
+                text=raw,
+                title=title,
+                url=url,
+                publisher=publisher,
+            )
+            for index, row in enumerate(facts):
+                origin = stored[index] if index < len(stored) else {}
+                if isinstance(origin, dict) and origin.get("id"):
+                    row["id"] = str(origin["id"])
+                if isinstance(origin, dict) and origin.get("source_ids"):
+                    row["source_ids"] = list(origin["source_ids"])
+        else:
+            facts = atomic_facts_from_text(
+                raw,
+                title=title,
+                url=url,
+                publisher=publisher,
+                skip_injection=detect_injection,
+            )
+        for fact in facts:
+            cleaned, _hits = redact_tree(fact.get("claim") or "")
+            fact["claim"] = cleaned
+            span, _ = redact_tree(fact.get("evidence_span") or "")
+            fact["evidence_span"] = span
+        echoes = self._echoes(event)
+        facts, disagreements = merge_echo_facts(facts, echoes)
         entities = [_jsonable(item) for item in (event.entities or [])]
+        source_ids = [f"fact:{fact['id']}" for fact in facts]
+        for echo in echoes:
+            source_ids.append(f"event:{echo['event_id']}")
         data = {
             "event_id": event.event_id,
             "event_type": event.event_type,
-            "title": event.title,
+            "title": title,
+            "url": url,
+            "source": publisher,
             "text": wrap_data(raw),
-            "facts": [{"id": "f1", "claim": claim, "evidence_span": claim}],
+            "facts": facts,
+            "summary": summarize_facts(facts),
             "entities": entities,
             "risks": _as_texts(getattr(event, "risks", None)),
             "opportunities": _as_texts(getattr(event, "opportunities", None)),
             "cluster_id": event.cluster_id,
-            "echo_sources": self._echoes(event),
+            "echo_sources": echoes,
+            "echo_disagreements": disagreements,
+            "source_text": source_text_map(facts, echoes),
             "suspicious_instructions": suspicious,
             "published_at": as_utc(event.published_at).isoformat(),
         }
-        return ToolResult(ok=True, data=data, source_ids=["fact:f1"])
+        return ToolResult(ok=True, data=data, source_ids=source_ids)
 
     def _echoes(self, event) -> list[dict[str, Any]]:
         cluster = event.cluster_id or ""
@@ -351,88 +399,190 @@ class Toolkit:
         for other in self.ranking.events:
             if other.event_id == event.event_id or (other.cluster_id or "") != cluster:
                 continue
-            found.append({"event_id": other.event_id, "title": other.title, "primary": bool(other.is_primary)})
-        return found
-
-    def _card_claim(self, card) -> str | None:
-        text = _CARD_TEXT.get(card.card_id)
-        if text:
-            return text
-        for attr in ("claim", "text"):
-            value = getattr(card, attr, None)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        doc_id = getattr(card, "doc_id", None) or card.card_id
-        chunks = getattr(card, "chunks", None)
-        if chunks is None:
-            chunks = getattr(self.ranking, "chunks", None)
-        if isinstance(chunks, dict):
-            chunk_text = chunks.get(card.card_id) or chunks.get(doc_id)
-            if isinstance(chunk_text, str) and chunk_text.strip():
-                return chunk_text.strip()
-        if isinstance(chunks, list):
-            for chunk in chunks:
-                if isinstance(chunk, dict):
-                    cid = chunk.get("doc_id") or chunk.get("card_id")
-                    ctext = chunk.get("text") or chunk.get("claim")
-                else:
-                    cid = getattr(chunk, "doc_id", None) or getattr(chunk, "card_id", None)
-                    ctext = getattr(chunk, "text", None) or getattr(chunk, "claim", None)
-                if cid in {card.card_id, doc_id} and isinstance(ctext, str) and ctext.strip():
-                    return ctext.strip()
-        return None
-
-    def search_alfa_analytics(self, args: dict[str, Any], state: dict[str, Any]) -> ToolResult:
-        topic = str(args.get("topic") or state.get("event_type") or "")
-        as_of = as_utc(datetime.fromisoformat(state["as_of"]))
-        limit = int(args.get("k") or 3)
-        cards = []
-        for card in self.ranking.cards:
-            if topic and topic not in card.topics:
-                continue
-            published = as_utc(card.published_at)
-            if published > as_of:
-                continue
-            text = self._card_claim(card)
-            if not text:
-                continue
-            doc_id, page, bbox = _CARD_META.get(card.card_id, (card.card_id, 1, [0.08, 0.1, 0.92, 0.42]))
-            stale = age_days(published, as_of) > self.config.stale_after_days
-            cards.append(
+            other_text = other.text or other.title or ""
+            other_url = str(getattr(other, "url", "") or "") or None
+            other_publisher = str(getattr(other, "source", "") or "") or None
+            other_facts = list(getattr(other, "facts", None) or [])
+            if not other_facts:
+                other_facts = atomic_facts_from_text(
+                    other_text,
+                    title=str(other.title or ""),
+                    url=other_url,
+                    publisher=other_publisher,
+                    skip_injection=detect_injection,
+                )
+            found.append(
                 {
-                    "card_id": card.card_id,
-                    "doc_id": doc_id,
-                    "page": page,
-                    "bbox_rel": bbox,
-                    "published_at": published.isoformat(),
-                    "verified": card.verified,
-                    "stale": stale,
-                    "topic": list(card.topics),
-                    "claim": text,
-                    "source": "alfa",
-                    "chunk_id": f"an:{doc_id}:p{page}:c0",
+                    "event_id": other.event_id,
+                    "title": other.title,
+                    "primary": bool(other.is_primary),
+                    "url": other_url,
+                    "publisher": other_publisher,
+                    "source": other_publisher,
+                    "text": other_text,
+                    "facts": other_facts,
                 }
             )
-            if len(cards) >= limit:
-                break
-        source_ids = [f"card:{item['card_id']}" for item in cards]
+        return found
+
+    def _kb_record(self, hit_id: str):
+        for collection in (self.kb_index.cards, self.kb_index.chunks):
+            for record in collection.records:
+                if record.id == hit_id:
+                    return record
+        return None
+
+    @staticmethod
+    def _claim_from_text(text: str, *, kind: str = "card") -> str:
+        # У карточек в индексе text = claim + metric/topics; claim — первая строка.
+        value = (text or "").strip()
+        if kind == "card" and "\n" in value:
+            return value.split("\n", 1)[0].strip()
+        return value
+
+    def _card_payload(self, record, *, as_of: datetime, score: float = 0.0) -> dict[str, Any] | None:
+        claim = self._claim_from_text(record.text, kind=record.kind)
+        if not claim:
+            return None
+        published = as_utc(record.published_at)
+        claim_type = str(record.extra.get("claim_type") or "")
+        return {
+            "card_id": record.id,
+            "doc_id": record.doc_id,
+            "page": int(record.page or 1),
+            "bbox_rel": list(record.bbox_rel or _DEFAULT_BBOX),
+            "published_at": published.isoformat(),
+            "verified": str(record.extra.get("verified") or "manual"),
+            "stale": age_days(published, as_of) > self.config.stale_after_days,
+            "topic": list(record.topics or []),
+            "claim": claim,
+            "claim_type": claim_type,
+            "source": "alfa",
+            "chunk_id": f"an:{record.doc_id}:p{int(record.page or 1)}:c0",
+            "score": score,
+        }
+
+    def _freshest_bank_view(self, topic: str, as_of: datetime):
+        best = None
+        for record in self.kb_index.cards.records:
+            if topic and topic not in (record.topics or []):
+                continue
+            if as_utc(record.published_at) > as_of:
+                continue
+            if str(record.extra.get("claim_type") or "") not in BANK_VIEW_TYPES:
+                continue
+            if best is None or as_utc(record.published_at) > as_utc(best.published_at):
+                best = record
+        return best
+
+    def _event_query(self, state: dict[str, Any]) -> str:
+        event = self.ranking.event_map().get(state.get("event_id"))
+        if event is None:
+            return ""
+        return " ".join(part for part in (event.title, event.text) if part)[:400]
+
+    def search_alfa_analytics(self, args: dict[str, Any], state: dict[str, Any]) -> ToolResult:
+        from alfa.ranking.open_world import infer_event_types, is_open_topic
+
+        topic = str(args.get("topic") or state.get("event_type") or "")
+        event = self.ranking.event_map().get(state.get("event_id"))
+        query = str(args.get("q") or "").strip() or self._event_query(state) or topic or "аналитика"
+        as_of = as_utc(datetime.fromisoformat(state["as_of"]))
+        limit = int(args.get("k") or 3)
+        if is_open_topic(topic):
+            inferred = infer_event_types(event) if event is not None else []
+            topic_filter = inferred or None
+        else:
+            topic_filter = [topic] if topic else None
+        hits = search_analytics(
+            query,
+            topics=topic_filter,
+            as_of=as_of,
+            k=max(limit * 3, 9),
+            mode="hybrid",
+            include_cards=True,
+            include_chunks=False,
+            index=self.kb_index,
+        )
+        if is_open_topic(topic) and not hits:
+            hits = search_analytics(
+                query,
+                topics=None,
+                as_of=as_of,
+                k=max(limit * 3, 9),
+                mode="hybrid",
+                include_cards=True,
+                include_chunks=False,
+                index=self.kb_index,
+            )
+        by_id: dict[str, dict[str, Any]] = {}
+        for hit in hits:
+            record = self._kb_record(hit.id)
+            if record is None:
+                continue
+            payload = self._card_payload(record, as_of=as_of, score=float(hit.score or 0))
+            if payload is not None:
+                by_id[payload["card_id"]] = payload
+        # Гибрид может утопить свежий взгляд банка — гарантируем свежайшую bank-view по теме.
+        pin_topics = list(topic_filter or ([topic] if topic and not is_open_topic(topic) else []))
+        if pin_topics:
+            fresh = self._freshest_bank_view(pin_topics[0], as_of)
+            if fresh is not None and fresh.id not in by_id:
+                payload = self._card_payload(fresh, as_of=as_of, score=1.0)
+                if payload is not None:
+                    by_id[payload["card_id"]] = payload
+            elif fresh is not None:
+                by_id[fresh.id]["score"] = max(float(by_id[fresh.id].get("score") or 0), 1.0)
+        cards = list(by_id.values())
+        bank = [item for item in cards if item.get("claim_type") in BANK_VIEW_TYPES]
+        other = [item for item in cards if item.get("claim_type") not in BANK_VIEW_TYPES]
+        bank.sort(key=lambda item: (item.get("published_at") or "", float(item.get("score") or 0)), reverse=True)
+        other.sort(key=lambda item: (item.get("published_at") or "", float(item.get("score") or 0)), reverse=True)
+        cards = (bank + other)[:limit]
+        # card_id уже вида card:doc:n — без второго префикса.
+        source_ids = [str(item["card_id"]) for item in cards]
         return ToolResult(ok=True, data={"cards": cards, "external": False}, source_ids=source_ids)
 
     def search_news(self, args: dict[str, Any], state: dict[str, Any]) -> ToolResult:
+        from alfa.ranking.open_world import infer_event_types, is_open_topic
+
+        # Отбор primary-событий: по теме или, для открытого мира, по выведенным темам текста.
         topic = str(args.get("topic") or state.get("event_type") or "")
+        current = self.ranking.event_map().get(state.get("event_id"))
+        inferred = infer_event_types(current) if current is not None and is_open_topic(topic) else []
         found = []
         for event in self.ranking.events:
             if event.event_id == state.get("event_id"):
                 continue
             if not event.is_primary:
                 continue
-            if topic and event.event_type != topic:
+            if is_open_topic(topic):
+                if inferred and event.event_type not in inferred:
+                    continue
+            elif topic and event.event_type != topic:
                 continue
+            raw = event.text or ""
+            url = str(getattr(event, "url", "") or "") or None
+            publisher = str(getattr(event, "source", "") or "") or None
+            facts = list(getattr(event, "facts", None) or [])
+            if not facts:
+                facts = atomic_facts_from_text(
+                    raw,
+                    title=str(event.title or ""),
+                    url=url,
+                    publisher=publisher,
+                    skip_injection=detect_injection,
+                    max_facts=3,
+                )
             found.append(
                 {
                     "event_id": event.event_id,
                     "title": event.title,
-                    "text": wrap_data(event.text or ""),
+                    "url": url,
+                    "source": publisher,
+                    "text": wrap_data(raw),
+                    "facts": facts,
+                    "summary": summarize_facts(facts, max_items=3),
                     "published_at": as_utc(event.published_at).isoformat(),
                     "primary": True,
                 }
@@ -446,18 +596,59 @@ class Toolkit:
         )
 
     def external_stats(self, args: dict[str, Any], state: dict[str, Any]) -> ToolResult:
+        # Фикстурный внешний ряд; если индикатора нет — value=None, число не выдумывается.
         indicator = str(args.get("indicator") or "")
         if indicator not in {"cpi", "unemployment", "industry_price"}:
             return ToolResult(ok=False, error="unknown_indicator")
+        as_of = as_utc(datetime.fromisoformat(state["as_of"]))
+        match = None
+        for row in _external_stats_rows():
+            if str(row.get("indicator") or "") != indicator:
+                continue
+            published = row.get("as_of") or row.get("published_at")
+            if published:
+                try:
+                    stamp = as_utc(datetime.fromisoformat(str(published).replace("Z", "+00:00")))
+                except ValueError:
+                    stamp = None
+                if stamp is not None and stamp > as_of:
+                    continue
+            if match is None:
+                match = row
+                continue
+            prev = match.get("as_of") or match.get("published_at") or ""
+            cur = row.get("as_of") or row.get("published_at") or ""
+            if str(cur) > str(prev):
+                match = row
+        if match is None:
+            return ToolResult(
+                ok=True,
+                data={
+                    "indicator": indicator,
+                    "value": None,
+                    "unit": None,
+                    "source": "Росстат",
+                    "external": True,
+                    "url": None,
+                    "note": "публичный ряд не найден в фикстурах, число не подставляется",
+                },
+                source_ids=[f"external:{indicator}"],
+            )
+        value = match.get("value")
+        note = str(match.get("note") or match.get("claim") or "")
         return ToolResult(
             ok=True,
             data={
                 "indicator": indicator,
-                "value": None,
-                "unit": None,
-                "source": "Росстат",
+                "value": value,
+                "unit": match.get("unit"),
+                "source": str(match.get("source") or "Росстат"),
                 "external": True,
-                "note": "публичный ряд не подключён, число не подставляется",
+                "url": match.get("url"),
+                "as_of": match.get("as_of") or match.get("published_at"),
+                "claim": note,
+                "evidence_span": str(match.get("evidence_span") or note),
+                "note": note,
             },
             source_ids=[f"external:{indicator}"],
         )
@@ -512,6 +703,8 @@ class Toolkit:
             "missing_features": list(explanation.missing_features),
             "group_signal": explanation.group_signal.model_dump() if explanation.group_signal else None,
             "graph_signal": explanation.graph_signal.model_dump() if explanation.graph_signal else None,
+            "summary": explanation.summary,
+            "signals": [item.model_dump() for item in explanation.signals],
         }
         # mechanism_ids без дублей, в порядке вклада
         ordered: list[str] = []

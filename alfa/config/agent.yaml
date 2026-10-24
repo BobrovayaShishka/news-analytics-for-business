@@ -2,6 +2,8 @@
 version: agent-v1
 max_steps: 8
 max_repair: 2
+# Сколько раз после gather можно дописать optional-шаги (без удаления required).
+max_replan: 1
 max_seconds: 25
 max_tokens: 8000
 session_max_tokens: 80000
@@ -15,6 +17,7 @@ stale_after_days: 60
 context_tokens: 2500
 chars_per_token: 4
 monitor_rate: 0.1
+# Chat follow-up: regex/cuts/templates by design (без LLM на classify/draft). Память — InsightStore.
 max_chat_turns: 6
 max_scenarios: 3
 disclaimer: "Аналитика не является инвестиционной рекомендацией"
@@ -52,6 +55,8 @@ base_tools:
   - {tool: get_event, args: {}, required: true}
   - {tool: explain_relevance, args: {}, required: true}
   - {tool: get_profile_view, args: {}, required: true}
+# Каталог необязательных шагов крошечный: только эти + get_group_context в mechanisms.yaml.
+# При llm_enabled=False в план не входят — план равен base_tools + tools механизмов.
 optional_tools:
   - {tool: search_news, args: {}}
   - {tool: external_stats, args: {indicator: cpi}}

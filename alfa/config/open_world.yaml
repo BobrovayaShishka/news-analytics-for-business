@@ -1,0 +1,175 @@
+# Открытый мир: лексика тем, не сценарии и не список event_id.
+# Новая новость матчится по словам; карточка и механизм берутся из профиля, не из заготовки.
+version: open-world-v1
+catch_all_rule: other__rko
+prior_min: 1.0
+relative_keep: 0.6
+weight_discount: 0.85
+# Типы, которые можно выставлять как event_type: у них есть правила на продукт/тему без сущности события.
+promote_types:
+  - key_rate
+  - fx
+  - inflation
+  - sanctions_trade
+  - taxes
+  - commodities_gold
+  - labor
+  - consumer_demand
+  - ma
+closed_types:
+  - other_econ
+  - irrelevant
+stopwords:
+  - банк
+  - россии
+  - компания
+  - год
+  - года
+  - рублей
+  - решение
+  - уровень
+  - событие
+  - новость
+  - публикация
+  - согласно
+  - также
+  - будет
+  - составляет
+cues:
+  key_rate:
+    - ключевая
+    - ставка
+    - дкп
+    - рефинансирован
+    - процентный
+  fx:
+    - курс
+    - валют
+    - доллар
+    - юань
+    - рубль
+    - форекс
+  inflation:
+    - инфляц
+    - инфляцион
+    - росстат
+    - ипц
+  sanctions_trade:
+    - санкц
+    - вэд
+    - таможен
+    - экспорт
+    - импорт
+    - нерезидент
+    - логистик
+    - порт
+    - контейнер
+    - пошлин
+  taxes:
+    - налог
+    - ндс
+    - акциз
+    - сбор
+    - фискальн
+    - утилизац
+    - пошлин
+  commodities_gold:
+    - золото
+    - нефть
+    - brent
+    - сырь
+    - метал
+    - унция
+  labor:
+    - зарплат
+    - мрот
+    - безработиц
+    - занятост
+    - персонал
+    - кадр
+  consumer_demand:
+    - розниц
+    - спрос
+    - потреблен
+    - ритейл
+    - магазин
+    - оборот
+  sector_regulation:
+    - тариф
+    - лиценз
+    - регулирован
+    - фас
+    - электроэнерг
+    - киловатт
+    - страхов
+    - осаго
+  ma:
+    - слиян
+    - поглощен
+    - ipo
+    - выкуп
+    - контроль
+bridge_rules:
+  - rule_id: open__input_cost_credit
+    event_types: [sector_regulation, inflation, commodities_gold]
+    when: {feature: has_credit, eq: true}
+    weight: 0.58
+    mechanism_id: input_cost
+    requires: [has_credit]
+    confidence_base: 0.5
+  - rule_id: open__input_cost_leasing
+    event_types: [sector_regulation, inflation]
+    when: {feature: has_leasing, eq: true}
+    weight: 0.52
+    mechanism_id: input_cost
+    requires: [has_leasing]
+    confidence_base: 0.5
+  - rule_id: open__input_cost_rko
+    event_types: [sector_regulation]
+    when: {feature: has_rko, eq: true}
+    weight: 0.38
+    mechanism_id: input_cost
+    requires: [has_rko]
+    confidence_base: 0.4
+  - rule_id: open__tax_rko
+    event_types: [taxes]
+    when: {feature: has_rko, eq: true}
+    weight: 0.55
+    mechanism_id: tax_burden
+    requires: [has_rko]
+    confidence_base: 0.55
+  - rule_id: open__demand_theme
+    event_types: [consumer_demand]
+    when: {feature: industry_theme, in: [retail_demand]}
+    weight: 0.8
+    mechanism_id: demand_shift
+    requires: [industry_theme]
+    confidence_base: 0.7
+  - rule_id: open__fx_exposure
+    event_types: [fx, sanctions_trade]
+    when: {feature: fx_exposure, eq: known}
+    weight: 0.7
+    mechanism_id: fx_cost
+    requires: [fx_exposure]
+    confidence_base: 0.6
+  - rule_id: open__import_fts
+    event_types: [sanctions_trade]
+    when: {feature: fx_exposure, eq: known}
+    weight: 0.68
+    mechanism_id: import_restrictions
+    requires: [fx_exposure]
+    confidence_base: 0.6
+  - rule_id: open__labor_payroll
+    event_types: [labor]
+    when: {feature: has_payroll, eq: true}
+    weight: 0.8
+    mechanism_id: labor_cost
+    requires: [has_payroll]
+    confidence_base: 0.75
+  - rule_id: open__debt_credit
+    event_types: [key_rate, ma]
+    when: {feature: has_credit, eq: true}
+    weight: 0.72
+    mechanism_id: debt_service_cost
+    requires: [has_credit]
+    confidence_base: 0.65

@@ -1,8 +1,19 @@
 """Оркестратор LangGraph. План исполняет код, модель не вызывает инструменты сама.
 
-init_context → plan → gather → ask_user → interpret → verify ─┬→ finalize
-                                              ↑                 │
-                                              └──── repair ─────┘
+План: YAML baseline (+ LLM optional) → gather → replan (адаптивно по observations) →
+при новых optional-шагах снова gather. Обязательные шаги не удаляются; replan только
+дописывает whitelist optional с явным why. При verify=repair — повторный поиск по
+плану + ремонт claims.
+
+При llm_enabled=False: baseline + heuristic_replan (те же правила, без модели).
+gather вызывает Toolkit; модель инструменты не выбирает сама.
+Ограничения инструментов — в docstring alfa.agent.tools.
+
+Память между generate / answer / chat — InsightStore, не LangGraph checkpointer.
+
+init_context → plan → gather ⇄ replan → ask_user → interpret → verify ─┬→ finalize
+                                                         ↑              │
+                                         research+claims └──── repair ──┘
 """
 
 from __future__ import annotations
@@ -20,15 +31,26 @@ warnings.filterwarnings(
     message="Core Pydantic V1 functionality isn't compatible",
 )
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
+from alfa.agent.config import OPTIONAL_TOOL_NAMES
 from alfa.agent.contract import assemble_insight
 from alfa.agent.impact import assess_impact
 from alfa.agent.interpret import build_context_pack, clip_text, llm_failure_kind, template_draft
 from alfa.agent.models import DraftRegistry, PlanDraft, RepairDraft
-from alfa.agent.planner import default_plan, merge_llm_plan, validate_plan
+from alfa.agent.planner import (
+    apply_replan_additions,
+    default_plan,
+    gather_observations,
+    heuristic_replan_additions,
+    merge_llm_plan,
+    merge_llm_replan_additions,
+    optional_catalog,
+    step_key,
+    step_key_str,
+    validate_plan,
+)
 from alfa.agent.traceview import digest
 from alfa.agent.verify import (
     apply_critic_status,
@@ -82,6 +104,8 @@ class AgentState(TypedDict, total=False):
     cost_rub: float
     repair_same_text: bool
     retried_steps: list
+    gathered_keys: list
+    replan_round: int
     journal: Annotated[list[dict], add]
 
 
@@ -147,30 +171,89 @@ def _block_reason(state: AgentState, config, store) -> str | None:
 
 
 def _absorb(evidence: dict, views: dict, calcs: list, tool: str, result) -> tuple[list, bool | None]:
+    from alfa.core.grounding import build_locator, locator_map, source_text_map
+
     if not result.ok:
         return calcs, None
     data = result.data or {}
     suspicious = None
+    locators = dict(evidence.get("locators") or {})
     if tool == "get_event":
         evidence["event"] = data
-        claim = ((data.get("facts") or [{}])[0]).get("claim") or ""
-        evidence["sources"]["fact:f1"] = claim
+        facts = list(data.get("facts") or [])
+        echoes = list(data.get("echo_sources") or [])
+        evidence["sources"].update(source_text_map(facts, echoes))
+        # Явный текст из payload, если source_text уже собран.
+        for key, value in (data.get("source_text") or {}).items():
+            evidence["sources"][str(key)] = value
+        locators.update(
+            locator_map(
+                facts,
+                event_title=str(data.get("title") or ""),
+                event_url=data.get("url"),
+                event_text=str(data.get("text") or ""),
+                publisher=data.get("source"),
+                echoes=echoes,
+            )
+        )
         suspicious = bool(data.get("suspicious_instructions"))
     elif tool == "search_alfa_analytics":
         existing = {card["card_id"]: card for card in evidence["cards"]}
         for card in data.get("cards") or []:
             existing[card["card_id"]] = card
-            evidence["sources"][f"card:{card['card_id']}"] = card["claim"]
+            evidence["sources"][str(card["card_id"])] = card["claim"]
         evidence["cards"] = list(existing.values())
+        locators.update(locator_map([], cards=evidence["cards"]))
     elif tool == "search_news":
-        evidence["news"].extend(data.get("news") or [])
+        news_items = list(data.get("news") or [])
+        evidence["news"].extend(news_items)
+        for item in news_items:
+            event_id = item.get("event_id")
+            if not event_id:
+                continue
+            key = f"event:{event_id}"
+            body = str(item.get("text") or item.get("summary") or item.get("title") or "")
+            span = str(item.get("summary") or "")[:240] or body[:240]
+            evidence["sources"][key] = body or span
+            locators[key] = build_locator(
+                source_id=key,
+                title=str(item.get("title") or event_id),
+                url=item.get("url"),
+                evidence_span=span,
+                text=body or span,
+                source_type="external_news",
+                publisher=item.get("source"),
+            )
     elif tool == "external_stats":
         evidence["stats"].append(data)
-        evidence["sources"].update({source_id: data.get("note") or "" for source_id in result.source_ids})
+        text = str(data.get("evidence_span") or data.get("claim") or data.get("note") or "")
+        if data.get("value") is not None:
+            text = f"{text} {data.get('value')} {data.get('unit') or ''}".strip()
+        evidence["sources"].update({source_id: text for source_id in result.source_ids})
+        for source_id in result.source_ids:
+            locators[str(source_id)] = build_locator(
+                source_id=str(source_id),
+                title=str(data.get("source") or source_id),
+                url=data.get("url"),
+                evidence_span=text,
+                text=text,
+                source_type="external_stats",
+                publisher=str(data.get("as_of") or data.get("source") or "") or None,
+            )
     elif tool == "calc":
         calcs = [item for item in calcs if item.get("calc_id") != data.get("calc_id")]
         calcs.append(data)
-        evidence["sources"][data["calc_id"]] = data["text"]
+        calc_text = str(data.get("text") or "")
+        evidence["sources"][data["calc_id"]] = calc_text
+        locators[data["calc_id"]] = build_locator(
+            source_id=data["calc_id"],
+            title=str(data.get("fn") or data["calc_id"]),
+            url=None,
+            evidence_span=calc_text,
+            text=calc_text,
+            source_type="calc",
+            publisher=str(data.get("formula") or "") or None,
+        )
     elif tool == "get_profile_view":
         views["profile"] = data
     elif tool == "get_group_context":
@@ -179,6 +262,7 @@ def _absorb(evidence: dict, views: dict, calcs: list, tool: str, result) -> tupl
         views["counterparties"] = data
     elif tool == "explain_relevance":
         views["explanation"] = data
+    evidence["locators"] = locators
     return calcs, suspicious
 
 
@@ -204,6 +288,90 @@ def _empty_draft(config, headline: str) -> dict:
     }
 
 
+# Замечания, при которых имеет смысл повторить поиск (не только править текст).
+_RESEARCH_ISSUES = frozenset(
+    {
+        "ungrounded",
+        "incomplete",
+        "missing_ref",
+        "no_analytics",
+        "stale",
+        "unjustified_inference",
+    }
+)
+# Какие инструменты плана трогаем под тип замечания. Только whitelist tools.
+_RESEARCH_TOOLS: dict[str, frozenset[str]] = {
+    "ungrounded": frozenset({"search_alfa_analytics", "get_event", "search_news"}),
+    "incomplete": frozenset(
+        {"search_alfa_analytics", "get_profile_view", "calc", "get_counterparties", "get_group_context"}
+    ),
+    "missing_ref": frozenset({"search_alfa_analytics", "get_event", "calc"}),
+    "no_analytics": frozenset({"search_alfa_analytics", "search_news"}),
+    "stale": frozenset({"search_alfa_analytics", "search_news"}),
+    "unjustified_inference": frozenset({"search_alfa_analytics", "get_event", "calc"}),
+}
+
+
+def _claim_query(state: AgentState, issues: list[dict]) -> str:
+    for issue in issues:
+        if issue.get("type") not in _RESEARCH_ISSUES or not issue.get("claim_id"):
+            continue
+        for claim in (state.get("draft") or {}).get("claims") or []:
+            if claim.get("id") == issue["claim_id"]:
+                return str(claim.get("text") or "")[:180]
+    return ""
+
+
+def _research_steps(state: AgentState, issues: list[dict], config, retried: set[str]) -> list[dict]:
+    """Шаги повторного поиска из принятого плана (+ optional whitelist). Без LLM re-plan."""
+    needed: set[str] = set()
+    for issue in issues:
+        kind = str(issue.get("type") or "")
+        if kind in _RESEARCH_TOOLS:
+            needed |= _RESEARCH_TOOLS[kind]
+    flags = set(state.get("flags") or [])
+    for step in (state.get("plan") or {}).get("steps") or []:
+        if step.get("required") and f"skipped:{step.get('tool')}" in flags:
+            needed.add(str(step.get("tool") or ""))
+
+    if not needed:
+        return []
+
+    event_type = str(state.get("event_type") or "other_econ")
+    query = _claim_query(state, issues)
+    selected: list[dict] = []
+    seen: set[tuple] = set()
+
+    def _add(tool: str, args: dict, step_id: str, *, required: bool) -> None:
+        key = step_key(tool, args)
+        if key in seen or step_id in retried:
+            return
+        seen.add(key)
+        payload_args = dict(args)
+        if tool == "search_alfa_analytics" and query and "q" not in payload_args:
+            payload_args = {**payload_args, "q": query}
+        selected.append(
+            {"id": step_id, "tool": tool, "args": payload_args, "required": required, "why": "repair_research"}
+        )
+
+    for step in (state.get("plan") or {}).get("steps") or []:
+        tool = str(step.get("tool") or "")
+        if tool not in needed:
+            continue
+        _add(tool, dict(step.get("args") or {}), str(step.get("id") or tool), required=bool(step.get("required")))
+
+    # Optional whitelist: дополнить поиск, если в плане шага ещё не было.
+    for item in optional_catalog(list(state.get("mechanism_ids") or []), event_type, config):
+        if item.tool not in needed or item.tool not in OPTIONAL_TOOL_NAMES:
+            continue
+        key = step_key(item.tool, item.args)
+        suffix = "_".join(f"{name}-{value}" for name, value in key[1]) or "default"
+        sid = f"research:{item.tool}:{suffix}"
+        _add(item.tool, dict(item.args), sid, required=False)
+
+    return selected[: max(1, int(config.max_steps))]
+
+
 def _over_budget(state: AgentState, config) -> bool:
     started = float(state.get("started") or 0)
     if started and time.perf_counter() - started > config.max_seconds:
@@ -212,7 +380,7 @@ def _over_budget(state: AgentState, config) -> bool:
 
 
 def _blank_evidence() -> dict:
-    return {"event": {}, "cards": [], "news": [], "stats": [], "sources": {}}
+    return {"event": {}, "cards": [], "news": [], "stats": [], "sources": {}, "locators": {}}
 
 
 def build_graph(runtime):
@@ -298,6 +466,11 @@ def build_graph(runtime):
         if runtime.llm_enabled and runtime.llm is not None and block is None:
             plan_path = config.prompt_path("plan")
             plan_prompt = plan_path.read_text(encoding="utf-8") if plan_path.exists() else ""
+            optional = optional_catalog(
+                state.get("mechanism_ids") or [],
+                state.get("event_type") or "",
+                config,
+            )
             result = runtime.llm.complete(
                 role=config.roles.get("plan", "critic"),
                 model="",
@@ -309,7 +482,10 @@ def build_graph(runtime):
                             {
                                 "event_type": state.get("event_type"),
                                 "mechanisms": state.get("mechanism_ids"),
-                                "default_steps": [step["tool"] for step in baseline["steps"]],
+                                "default_steps": baseline["steps"],
+                                "optional_steps": [
+                                    {"tool": step.tool, "args": step.args, "required": False} for step in optional
+                                ],
                             },
                             ensure_ascii=False,
                         ),
@@ -320,32 +496,16 @@ def build_graph(runtime):
                 trace_id=state.get("trace_id"),
                 prompt_version=config.prompt_versions.get("plan"),
             )
-            journal.append(
-                {
-                    "type": "llm_call",
-                    "role": "plan",
-                    "model": result.model,
-                    "prompt_version": config.prompt_versions.get("plan"),
-                    "tokens_in": result.tokens_in,
-                    "tokens_out": result.tokens_out,
-                    "cache_hit": result.cache_hit,
-                    "error": result.error,
-                    "latency_ms": result.latency_ms,
-                }
-            )
+            journal.append(_llm_event("plan", result, config.prompt_versions.get("plan")))
             tokens += int(result.tokens_in or 0) + int(result.tokens_out or 0)
             if not result.ok:
                 journal.append({"type": "decision", "kind": "planner_unavailable", "reason": result.error or "planner_unavailable"})
             else:
-                proposed = result.parsed.model_dump() if hasattr(result.parsed, "model_dump") else result.parsed
-                if isinstance(proposed, str):
-                    try:
-                        proposed = json.loads(proposed)
-                    except json.JSONDecodeError as exc:
-                        journal.append({"type": "decision", "kind": "plan_rejected", "reason": str(exc)})
-                        flags = _flags({"flags": flags}, "plan_rejected")
-                        proposed = None
-                if isinstance(proposed, dict):
+                proposed = _parsed_dict(result)
+                if proposed is None and result.parsed is not None:
+                    journal.append({"type": "decision", "kind": "plan_rejected", "reason": "план не объект"})
+                    flags = _flags({"flags": flags}, "plan_rejected")
+                elif proposed is not None:
                     try:
                         merged, error = merge_llm_plan(
                             baseline,
@@ -361,9 +521,6 @@ def build_graph(runtime):
                         flags = _flags({"flags": flags}, "plan_rejected")
                     else:
                         chosen = merged
-                elif proposed is not None:
-                    journal.append({"type": "decision", "kind": "plan_rejected", "reason": "план не объект"})
-                    flags = _flags({"flags": flags}, "plan_rejected")
         error = validate_plan(chosen, config)
         if error:
             journal.append({"type": "decision", "kind": "plan_rejected", "reason": error})
@@ -384,24 +541,35 @@ def build_graph(runtime):
         started = time.perf_counter()
         journal: list[dict] = []
         flags = _flags(state)
+        prev = state.get("evidence") or {}
         evidence = {
-            "event": {},
-            "cards": [],
-            "news": [],
-            "stats": [],
-            "sources": dict((state.get("evidence") or {}).get("sources") or {}),
+            "event": dict(prev.get("event") or {}),
+            "cards": list(prev.get("cards") or []),
+            "news": list(prev.get("news") or []),
+            "stats": list(prev.get("stats") or []),
+            "sources": dict(prev.get("sources") or {}),
+            "locators": dict(prev.get("locators") or {}),
         }
         views = dict(state.get("views") or {})
         calcs = list(state.get("calc_results") or [])
+        gathered = set(state.get("gathered_keys") or [])
         working = dict(state)
         working["views"] = views
+        working["evidence"] = evidence
+        working["calc_results"] = calcs
         suspicious = bool(state.get("suspicious"))
+        ran: list[str] = []
         for step in (state.get("plan") or {}).get("steps") or []:
+            key = step_key_str(step["tool"], dict(step.get("args") or {}))
+            if key in gathered:
+                continue
             if _over_budget(working, config):
                 flags = _flags({"flags": flags}, "budget_exhausted")
                 break
             result, event = toolkit.call(step["tool"], step.get("args") or {}, working)
             journal.append(event)
+            gathered.add(key)
+            ran.append(str(step.get("id") or key))
             if not result.ok:
                 flags = _flags({"flags": flags}, f"skipped:{step['tool']}")
                 continue
@@ -419,14 +587,153 @@ def build_graph(runtime):
             "gather",
             started,
             journal,
-            {"steps": [step.get("id") for step in (state.get("plan") or {}).get("steps") or []]},
+            {"steps": ran},
             {
                 "evidence": evidence,
                 "views": views,
                 "calc_results": calcs,
                 "suspicious": suspicious,
                 "flags": flags,
+                "gathered_keys": sorted(gathered),
             },
+        )
+
+    def replan_node(state: AgentState) -> dict:
+        """Адаптивное дописывание optional-шагов после gather; required не трогаем."""
+        started = time.perf_counter()
+        journal: list[dict] = []
+        flags = _flags(state)
+        tokens = int(state.get("tokens") or 0)
+        round_no = int(state.get("replan_round") or 0)
+        plan = dict(state.get("plan") or {})
+        mechanisms = list(state.get("mechanism_ids") or [])
+        event_type = str(state.get("event_type") or "")
+        observations = gather_observations(state)
+        additions: list[dict] = []
+        reasons: list[str] = []
+        block = _block_reason(state, config, runtime.store)
+        if round_no >= int(config.max_replan) or block is not None or _over_budget(state, config):
+            journal.append(
+                {
+                    "type": "decision",
+                    "kind": "replan_skip",
+                    "round": round_no,
+                    "reason": block or ("max_replan" if round_no >= config.max_replan else "budget"),
+                    "observations": observations,
+                }
+            )
+            return _finish(
+                "replan",
+                started,
+                journal,
+                {"round": round_no},
+                {"plan": plan, "flags": flags, "tokens": tokens, "replan_round": round_no},
+            )
+
+        if runtime.llm_enabled and runtime.llm is not None and block is None:
+            optional = optional_catalog(mechanisms, event_type, config)
+            plan_path = config.prompt_path("plan")
+            plan_prompt = plan_path.read_text(encoding="utf-8") if plan_path.exists() else ""
+            result = runtime.llm.complete(
+                role=config.roles.get("plan", "critic"),
+                model="",
+                messages=[
+                    {"role": "system", "content": plan_prompt},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "mode": "replan",
+                                "event_type": event_type,
+                                "mechanisms": mechanisms,
+                                "observations": observations,
+                                "default_steps": plan.get("steps") or [],
+                                "optional_steps": [
+                                    {"tool": step.tool, "args": step.args, "required": False} for step in optional
+                                ],
+                            },
+                            ensure_ascii=False,
+                            default=str,
+                        ),
+                    },
+                ],
+                response_schema=PlanDraft,
+                temperature=0.0,
+                trace_id=state.get("trace_id"),
+                prompt_version=config.prompt_versions.get("plan"),
+            )
+            journal.append(_llm_event("plan", result, config.prompt_versions.get("plan")))
+            tokens += int(result.tokens_in or 0) + int(result.tokens_out or 0)
+            if result.ok and result.parsed is not None:
+                proposed = _parsed_dict(result)
+                if isinstance(proposed, dict):
+                    added, reasoning_text, error = merge_llm_replan_additions(
+                        plan, proposed, mechanisms, event_type, config
+                    )
+                    if error:
+                        journal.append({"type": "decision", "kind": "replan_rejected", "reason": error})
+                        flags = _flags({"flags": flags}, "plan_rejected")
+                    else:
+                        additions.extend(added)
+                        reasons.extend(str(step.get("why") or "") for step in added)
+                        if reasoning_text:
+                            reasons.insert(0, reasoning_text)
+
+        if not additions:
+            heur_add, heur_why = heuristic_replan_additions(plan, observations, mechanisms, event_type, config)
+            additions = heur_add
+            reasons = heur_why or reasons
+
+        if not additions:
+            journal.append(
+                {
+                    "type": "decision",
+                    "kind": "replan_noop",
+                    "round": round_no,
+                    "observations": observations,
+                    "reasoning": "пробелов для optional-шагов нет",
+                }
+            )
+            return _finish(
+                "replan",
+                started,
+                journal,
+                {"round": round_no, "added": []},
+                {"plan": plan, "flags": flags, "tokens": tokens, "replan_round": round_no},
+            )
+
+        reasoning = "; ".join(item for item in reasons if item)[:500]
+        updated = apply_replan_additions(plan, additions, reasoning)
+        error = validate_plan(updated, config)
+        if error:
+            journal.append({"type": "decision", "kind": "replan_rejected", "reason": error})
+            return _finish(
+                "replan",
+                started,
+                journal,
+                {"round": round_no},
+                {"plan": plan, "flags": _flags({"flags": flags}, "plan_rejected"), "tokens": tokens, "replan_round": round_no},
+            )
+        next_round = round_no + 1
+        before_n = len(plan.get("steps") or [])
+        added_ids = [step.get("id") for step in (updated.get("steps") or [])[before_n:]]
+        journal.append(
+            {
+                "type": "decision",
+                "kind": "replan",
+                "round": next_round,
+                "added": added_ids,
+                "reasoning": reasoning,
+                "observations": observations,
+                "plan": updated,
+            }
+        )
+        return _finish(
+            "replan",
+            started,
+            journal,
+            {"round": next_round, "added": added_ids},
+            {"plan": updated, "flags": flags, "tokens": tokens, "replan_round": next_round},
         )
 
     def ask_user_node(state: AgentState) -> dict:
@@ -756,61 +1063,57 @@ def build_graph(runtime):
         )
 
     def repair_node(state: AgentState) -> dict:
+        """Повторный поиск по фиксированному плану, затем interpret правит claims."""
         started = time.perf_counter()
         iteration = int(state.get("iteration") or 0) + 1
         journal: list[dict] = []
         evidence = dict(state.get("evidence") or _blank_evidence())
         evidence["sources"] = dict(evidence.get("sources") or {})
-        issues = (state.get("verification") or {}).get("issues") or []
-        if any(item["type"] in {"ungrounded", "incomplete"} for item in issues) and not _over_budget(state, config):
-            claim_text = ""
-            for issue in issues:
-                if issue["type"] in {"ungrounded", "incomplete"} and issue.get("claim_id"):
-                    for claim in (state.get("draft") or {}).get("claims") or []:
-                        if claim.get("id") == issue["claim_id"]:
-                            claim_text = str(claim.get("text") or "")[:180]
-            result, event = toolkit.call(
-                "search_alfa_analytics",
-                {"topic": state.get("event_type") or "other_econ", "q": claim_text},
-                state,
-            )
-            journal.append(event)
-            if result.ok:
-                existing = {card["card_id"]: card for card in evidence.get("cards") or []}
-                for card in result.data.get("cards") or []:
-                    existing[card["card_id"]] = card
-                    evidence["sources"][f"card:{card['card_id']}"] = card["claim"]
-                evidence["cards"] = list(existing.values())
         views = dict(state.get("views") or {})
         calcs = list(state.get("calc_results") or [])
         retried = set(state.get("retried_steps") or [])
         flags = _flags(state)
         suspicious = bool(state.get("suspicious"))
-        if any(item.get("type") == "incomplete" for item in issues):
+        issues = (state.get("verification") or {}).get("issues") or []
+        researched: list[str] = []
+        if not _over_budget(state, config):
             working = dict(state)
             working["evidence"] = evidence
             working["views"] = views
             working["calc_results"] = calcs
-            for step in (state.get("plan") or {}).get("steps") or []:
-                if not step.get("required") or f"skipped:{step['tool']}" not in flags or step.get("id") in retried:
-                    continue
+            for step in _research_steps(state, issues, config, retried):
+                if _over_budget(working, config):
+                    flags = _flags({"flags": flags}, "budget_exhausted")
+                    break
                 result, event = toolkit.call(step["tool"], step.get("args") or {}, working)
                 journal.append(event)
-                retried.add(step.get("id"))
+                step_id = str(step.get("id") or step["tool"])
+                retried.add(step_id)
+                researched.append(step_id)
                 if not result.ok:
                     continue
                 calcs, suspicious_bit = _absorb(evidence, views, calcs, step["tool"], result)
                 if suspicious_bit:
                     suspicious = True
+                if step["tool"] == "explain_relevance":
+                    working["explanation"] = result.data
                 working["evidence"] = evidence
                 working["views"] = views
                 working["calc_results"] = calcs
-        journal.append({"type": "decision", "kind": "repair", "iteration": iteration, "reason": "повторный проход проверки"})
+        journal.append(
+            {
+                "type": "decision",
+                "kind": "repair",
+                "iteration": iteration,
+                "reason": "повторный поиск по плану, затем ремонт утверждений",
+                "researched": researched,
+            }
+        )
         return _finish(
             "repair",
             started,
             journal,
-            {"iteration": iteration, "retried": sorted(retried)},
+            {"iteration": iteration, "retried": sorted(retried), "researched": researched},
             {
                 "iteration": iteration,
                 "evidence": evidence,
@@ -855,6 +1158,14 @@ def build_graph(runtime):
             return "finalize"
         return "plan"
 
+    def route_after_replan(state: AgentState) -> str:
+        gathered = set(state.get("gathered_keys") or [])
+        for step in (state.get("plan") or {}).get("steps") or []:
+            key = step_key_str(step["tool"], dict(step.get("args") or {}))
+            if key not in gathered:
+                return "gather"
+        return "ask_user"
+
     def route_after_verify(state: AgentState) -> str:
         flags = set(state.get("flags") or [])
         if "invalid_json" in flags:
@@ -868,6 +1179,7 @@ def build_graph(runtime):
     graph.add_node("init_context", init_context)
     graph.add_node("plan", plan_node)
     graph.add_node("gather", gather_node)
+    graph.add_node("replan", replan_node)
     graph.add_node("ask_user", ask_user_node)
     graph.add_node("interpret", interpret_node)
     graph.add_node("verify", verify_node)
@@ -876,13 +1188,15 @@ def build_graph(runtime):
     graph.add_conditional_edges(START, route_entry, {"init_context": "init_context", "interpret": "interpret"})
     graph.add_conditional_edges("init_context", route_after_init, {"plan": "plan", "finalize": "finalize"})
     graph.add_edge("plan", "gather")
-    graph.add_edge("gather", "ask_user")
+    graph.add_edge("gather", "replan")
+    graph.add_conditional_edges("replan", route_after_replan, {"gather": "gather", "ask_user": "ask_user"})
     graph.add_edge("ask_user", "interpret")
     graph.add_edge("interpret", "verify")
     graph.add_conditional_edges("verify", route_after_verify, {"repair": "repair", "finalize": "finalize"})
     graph.add_edge("repair", "interpret")
     graph.add_edge("finalize", END)
-    return graph.compile(checkpointer=MemorySaver())
+    # Без checkpointer: диалог и resume живут в InsightStore, не в MemorySaver.
+    return graph.compile()
 
 
 def _llm_event(role: str, result, prompt_version: str | None) -> dict:
@@ -897,6 +1211,17 @@ def _llm_event(role: str, result, prompt_version: str | None) -> dict:
         "error": result.error,
         "latency_ms": result.latency_ms,
     }
+
+
+def _parsed_dict(result) -> dict | None:
+    """Достать объект из LLM complete (model_dump / JSON-строка)."""
+    proposed = result.parsed.model_dump() if hasattr(result.parsed, "model_dump") else result.parsed
+    if isinstance(proposed, str):
+        try:
+            proposed = json.loads(proposed)
+        except json.JSONDecodeError:
+            return None
+    return proposed if isinstance(proposed, dict) else None
 
 
 def _role_hint(role: str | None) -> str:

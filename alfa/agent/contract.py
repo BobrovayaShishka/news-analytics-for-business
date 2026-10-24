@@ -14,10 +14,12 @@ from alfa.agent.models import (
     PendingQuestion,
     RelevanceView,
     Scenario,
+    SourceRef,
     UserFact,
     VerificationView,
 )
 from alfa.agent.verify import contradictions
+from alfa.core.grounding import insight_sources
 
 _CLAIM_FIELDS = {
     "id",
@@ -112,6 +114,29 @@ def assemble_insight(state: dict, config: AgentConfig) -> dict[str, Any]:
     components = {str(key): float(value) for key, value in (explanation.get("components") or {}).items()}
     priority = state.get("priority") if state.get("priority") in {"urgent", "regular"} else "regular"
     role = state.get("role") if state.get("role") in {"ceo", "cfo", "default"} else "default"
+    used_refs: list[str] = []
+    for claim in dumped:
+        used_refs.extend(claim.get("refs") or [])
+        used_refs.extend(claim.get("calc_refs") or [])
+        used_refs.extend(claim.get("evidence") or [])
+    for item in calcs:
+        used_refs.append(item.calc_id)
+    locators = dict((state.get("evidence") or {}).get("locators") or {})
+    source_rows = [
+        SourceRef.model_validate(
+            {
+                "id": row["id"],
+                "type": row["type"] if row.get("type") in {"external_news", "bank_analytics", "company_data", "calc", "external_stats"} else "external_news",
+                "title": row.get("title") or row["id"],
+                "locator": row.get("locator"),
+                "url": row.get("url"),
+                "evidence_span": row.get("evidence_span"),
+                "char_start": row.get("char_start"),
+                "char_end": row.get("char_end"),
+            }
+        )
+        for row in insight_sources(locators, used_refs)
+    ]
     insight = Insight(
         insight_id=str(state["insight_id"]),
         trace_id=str(state["trace_id"]),
@@ -152,6 +177,12 @@ def assemble_insight(state: dict, config: AgentConfig) -> dict[str, Any]:
             mechanism_ids=list(state.get("mechanism_ids") or []),
             rules=list(explanation.get("rules") or []),
             above_threshold=bool(explanation.get("above_threshold") or False),
+            summary=str(explanation.get("summary") or ""),
+            signals=[
+                {"feature": str(item.get("feature") or ""), "value": item.get("value"), "reason": str(item.get("reason") or "")}
+                for item in (explanation.get("signals") or [])
+                if isinstance(item, dict)
+            ],
         ),
         missing_data=missing,
         verification=VerificationView(
@@ -165,5 +196,6 @@ def assemble_insight(state: dict, config: AgentConfig) -> dict[str, Any]:
         pending_question=question,
         flags=flags,
         disclaimer=config.disclaimer,
+        sources=source_rows,
     )
     return insight.model_dump(mode="json")

@@ -31,6 +31,9 @@ def public_features(features: dict[str, Any]) -> dict[str, Any]:
         "has_factoring",
         "has_group",
         "reliability",
+        "market_rank",
+        "market_peers",
+        "market_okved2",
     )
     return {key: features[key] for key in allowed if key in features}
 

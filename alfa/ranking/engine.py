@@ -12,7 +12,9 @@ import pandas as pd
 from alfa.core.timeutil import SECONDS_PER_DAY
 from alfa.ranking.config import RankingConfig, RuleSpec
 from alfa.ranking.entities import link_entities
+from alfa.ranking.open_world import applicable_rules
 from alfa.ranking.matrix import RELIABILITY_NAME, RELIABILITY_RANK, FeatureMatrix, embed_texts
+from alfa.ranking.explain_text import human_explanation
 from alfa.ranking.models import (
     CardView,
     FiredRule,
@@ -89,10 +91,18 @@ def event_is_active(event: RankEvent, as_of: datetime, config: RankingConfig) ->
     return age_days(event.published_at, as_of) <= config.window_days(event.event_type)
 
 
-def analytics_signal(event_type: str, as_of: datetime, cards: list[CardView], config: RankingConfig) -> tuple[float, list[str]]:
+def analytics_signal(
+    event_type: str,
+    as_of: datetime,
+    cards: list[CardView],
+    config: RankingConfig,
+    *,
+    topics: set[str] | None = None,
+) -> tuple[float, list[str]]:
     block = config.scoring["analytics"]
     half = float(block["half_life_days"])
-    matching = [card for card in cards if event_type in card.topics and as_utc(card.published_at) <= as_utc(as_of)]
+    wanted = set(topics or []) | {event_type}
+    matching = [card for card in cards if wanted & set(card.topics) and as_utc(card.published_at) <= as_utc(as_of)]
     if not matching:
         return 0.0, []
     best = max(matching, key=lambda card: as_utc(card.published_at))
@@ -199,6 +209,8 @@ def _condition(cond: dict, matrix: FeatureMatrix, signals: dict, flag_true: floa
         return mask
     if "gte" in cond:
         return mask & np.isfinite(column) & (column >= float(cond["gte"]))
+    if "lte" in cond:
+        return mask & np.isfinite(column) & (column <= float(cond["lte"]))
     return np.zeros(n, dtype=bool)
 
 
@@ -300,6 +312,7 @@ def _empty(n: int, config: RankingConfig, filtered: bool) -> ScoreArrays:
         analytics_refs=[],
         linked=[],
         event_themes=set(),
+        flags_common=[],
     )
 
 
@@ -383,7 +396,7 @@ def score_arrays(
     timings["graph"] += time.perf_counter() - started
 
     started = time.perf_counter()
-    applicable = [rule for rule in config.rules if event.event_type in rule.event_types]
+    applicable, open_world, inferred_types = applicable_rules(event, config)
     referenced: set[str] = set()
     for rule in applicable:
         _walk(rule.when, referenced)
@@ -461,7 +474,13 @@ def score_arrays(
         entity_score = np.zeros(n, dtype=np.float64)
     else:
         entity_score = np.clip(entity_score + boost, 0.0, 1.0)
-    strength, analytics_refs = analytics_signal(event.event_type, as_of, cards, config)
+    strength, analytics_refs = analytics_signal(
+        event.event_type,
+        as_of,
+        cards,
+        config,
+        topics=set(inferred_types),
+    )
     analytics_score = np.full(n, strength if "analytics" in blocks else 0.0, dtype=np.float64)
     weights = config.scoring["weights"]
     relevance = np.clip(
@@ -474,8 +493,22 @@ def score_arrays(
         0.0,
         1.0,
     )
-    importance = _importance(event, config)
-    fresh = math.exp(-math.log(2) * age_days(event.published_at, as_of) / config.half_life(event.event_type))
+    score_type = inferred_types[0] if open_world and inferred_types else event.event_type
+    if score_type == event.event_type:
+        importance = _importance(event, config)
+    else:
+        importance = _importance(
+            RankEvent(
+                event_id=event.event_id,
+                event_type=score_type,
+                published_at=event.published_at,
+                trust_tier=event.trust_tier,
+                magnitude=event.magnitude,
+                n_sources=event.n_sources,
+            ),
+            config,
+        )
+    fresh = math.exp(-math.log(2) * age_days(event.published_at, as_of) / config.half_life(score_type))
     trust = config.trust(event.trust_tier)
     p_dup = np.zeros(n, dtype=np.float64)
     if blocked:
@@ -512,7 +545,7 @@ def score_arrays(
     urgent = (relevance >= float(thresholds["tau_rel"])) & (importance >= float(thresholds["tau_imp"])) & (
         age_days(event.published_at, as_of) <= float(thresholds["tau_age_days"])
     )
-    above = score >= config.tau_show(event.event_type)
+    above = score >= config.tau_show(score_type)
     components = {
         "S_sens": sensitivity,
         "S_entity": entity_score,
@@ -550,6 +583,7 @@ def score_arrays(
         analytics_refs=analytics_refs,
         linked=linked,
         event_themes=event_themes,
+        flags_common=["open_world"] if open_world else [],
     )
 
 
@@ -658,7 +692,7 @@ def explain_score(matrix: FeatureMatrix, arrays: ScoreArrays, config: RankingCon
                 break
         graph_signal = SignalSource(via="payment_neighborhood", mechanism_id=mechanism)
     hypothesis = _hypothesis(matrix, arrays, config, index)
-    flags: list[str] = []
+    flags: list[str] = list(arrays.flags_common)
     if bool(arrays.low_confidence[index]):
         flags.append("low_confidence")
     fuzzy = any(item.fuzzy for item in arrays.linked)
@@ -677,6 +711,17 @@ def explain_score(matrix: FeatureMatrix, arrays: ScoreArrays, config: RankingCon
         if rule.mechanism_id not in mechanism_ids:
             mechanism_ids.append(rule.mechanism_id)
     priority = "urgent" if bool(arrays.urgent[index]) else "regular"
+    hypotheses = [hypothesis] if hypothesis else []
+    row = matrix.rows[index]
+    summary, signals = human_explanation(
+        row,
+        event,
+        fired,
+        config,
+        group_signal=group_signal,
+        graph_signal=graph_signal,
+        hypotheses=hypotheses,
+    )
     return {
         "score": float(arrays.score[index]),
         "relevance": float(arrays.relevance[index]),
@@ -687,7 +732,7 @@ def explain_score(matrix: FeatureMatrix, arrays: ScoreArrays, config: RankingCon
         "priority": priority,
         "flags": sorted(flags),
         "mechanism_ids": mechanism_ids,
-        "hypotheses": [hypothesis] if hypothesis else [],
+        "hypotheses": hypotheses,
         "missing_features": missing,
         "score_confidence": float(arrays.confidence[index]),
         "group_signal": group_signal,
@@ -695,4 +740,6 @@ def explain_score(matrix: FeatureMatrix, arrays: ScoreArrays, config: RankingCon
         "analytics_refs": list(arrays.analytics_refs),
         "eligible": bool(arrays.evidence[index]) and not arrays.filtered,
         "above_threshold": bool(arrays.above[index]) and not arrays.filtered,
+        "summary": summary,
+        "signals": signals,
     }

@@ -134,11 +134,20 @@ def extract_event(
         return failed.model_copy(update={"truncated": truncated})
 
     draft = result.parsed
-    try:
-        event_type = get_taxonomy().event_type(draft.event_type) if draft.event_type else None
-        secondary = [get_taxonomy().event_type(code) for code in draft.secondary_types]
-    except KeyError:
-        return _failed(doc, model=model, version=version, trace_id=trace_id)
+    taxonomy = get_taxonomy()
+    if draft.event_type:
+        try:
+            event_type = taxonomy.event_type(draft.event_type)
+        except KeyError:
+            event_type = taxonomy.event_type("other_econ")
+    else:
+        event_type = None
+    secondary = []
+    for code in draft.secondary_types:
+        try:
+            secondary.append(taxonomy.event_type(code))
+        except KeyError:
+            continue
 
     status_code = draft.extraction_status or "ok"
     if status_code not in get_taxonomy().codes("extraction_status"):

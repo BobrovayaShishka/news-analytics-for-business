@@ -24,6 +24,17 @@ class FxProfile(BaseModel):
     raw: str | None = None
 
 
+class MarketPosition(BaseModel):
+    """Ранг по выручке внутри ОКВЭД-2 среди клиентов банка. Доля рынка в выгрузке отсутствует."""
+
+    method: Literal["revenue_rank_within_okved2"] = "revenue_rank_within_okved2"
+    okved2: str | None = None
+    rank: int | None = None
+    peers: int | None = None
+    share_percent: Literal[None] = None
+    note: str = "Доля рынка в выгрузке отсутствует."
+
+
 class Attributes(BaseModel):
     client_type: str | None = None
     okved_code: str | None = None
@@ -53,6 +64,7 @@ class Profile(BaseModel):
     attributes: Attributes
     products: Products
     fx: FxProfile
+    market_position: MarketPosition = Field(default_factory=MarketPosition)
     missing_fields: list[str]
     structurally_missing: list[str]
     text_description: str

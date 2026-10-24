@@ -34,6 +34,12 @@ TOOL_NAMES = frozenset(
     }
 )
 
+# Необязательные шаги, которые LLM может добавить к YAML-плану. Всё остальное — только из tools.
+OPTIONAL_TOOL_NAMES = frozenset({"search_news", "external_stats", "get_group_context"})
+
+# Слой alfa — только взгляд банка, не чужой факт ЦБ/Росстата под атрибуцией Альфа.
+BANK_VIEW_TYPES = frozenset({"forecast", "opinion", "risk_assessment"})
+
 TOPICS = frozenset(
     {
         "key_rate",
@@ -98,6 +104,7 @@ class AgentConfig:
     disclaimer: str
     max_steps: int
     max_repair: int
+    max_replan: int
     max_seconds: float
     max_tokens: int
     session_max_tokens: int
@@ -152,9 +159,17 @@ def _questions(raw: dict[str, Any]) -> dict[str, QuestionSpec]:
     return output
 
 
+def _check_optional(steps: tuple[ToolStep, ...], where: str) -> None:
+    bad = sorted({step.tool for step in steps if step.tool not in OPTIONAL_TOOL_NAMES})
+    if bad:
+        raise ValueError(f"{where}: optional_tools только {sorted(OPTIONAL_TOOL_NAMES)}, лишние: {bad}")
+
+
 def _mechanisms(raw: dict[str, Any]) -> dict[str, MechanismSpec]:
     output: dict[str, MechanismSpec] = {}
     for name, payload in (raw.get("mechanisms") or {}).items():
+        optional = _steps(payload.get("optional_tools"), required=False)
+        _check_optional(optional, name)
         output[str(name)] = MechanismSpec(
             mechanism_id=str(name),
             directness=str(payload.get("directness") or "direct"),
@@ -163,7 +178,7 @@ def _mechanisms(raw: dict[str, Any]) -> dict[str, MechanismSpec]:
             optional_fields=tuple(str(item) for item in payload.get("optional_fields") or []),
             changes_conclusion=tuple(str(item) for item in payload.get("changes_conclusion") or []),
             tools=_steps(payload.get("tools"), required=True),
-            optional_tools=_steps(payload.get("optional_tools"), required=False),
+            optional_tools=optional,
         )
     return output
 
@@ -202,6 +217,9 @@ def load_agent_config() -> AgentConfig:
     mechanisms = _mechanisms(mechanisms_raw)
     questions = _questions(mechanisms_raw)
     _require_alignment(mechanisms)
+    base_tools = _steps(raw.get("base_tools"), required=True)
+    optional_tools = _steps(raw.get("optional_tools"), required=False)
+    _check_optional(optional_tools, "agent.yaml")
     for spec in mechanisms.values():
         for field_name in spec.critical_fields:
             if field_name not in questions:
@@ -216,6 +234,7 @@ def load_agent_config() -> AgentConfig:
         disclaimer=str(raw["disclaimer"]),
         max_steps=int(raw["max_steps"]),
         max_repair=int(raw["max_repair"]),
+        max_replan=int(raw.get("max_replan", 1)),
         max_seconds=float(raw["max_seconds"]),
         max_tokens=int(raw["max_tokens"]),
         session_max_tokens=int(raw["session_max_tokens"]),
@@ -236,6 +255,6 @@ def load_agent_config() -> AgentConfig:
         prompt_versions={str(key): str(value) for key, value in (raw.get("prompt_versions") or {}).items()},
         rub_per_1k=float((raw.get("cost") or {}).get("rub_per_1k_tokens") or 0),
         data_policy=dict(raw.get("data_policy") or {}),
-        base_tools=_steps(raw.get("base_tools"), required=True),
-        optional_tools=_steps(raw.get("optional_tools"), required=False),
+        base_tools=base_tools,
+        optional_tools=optional_tools,
     )

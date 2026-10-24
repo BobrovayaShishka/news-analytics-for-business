@@ -6,22 +6,22 @@ import os
 import re
 from typing import Any
 
-from alfa.agent.config import AgentConfig
+from alfa.agent.config import BANK_VIEW_TYPES, AgentConfig
 from alfa.agent.impact import assess_impact
 from alfa.agent.security import redact_text, wrap_data
 
 _HEADLINES = {
-    "debt_service_cost": "Ключевая ставка касается стоимости вашего кредита",
-    "deposit_yield": "Ключевая ставка касается доходности размещённых средств",
-    "fx_cost": "Курс касается валютной стоимости операций",
-    "import_restrictions": "Ограничения внешней торговли касаются валютного контура",
-    "labor_cost": "Рынок труда касается расходов на персонал",
-    "demand_shift": "Сдвиг спроса касается выручки в вашей отрасли",
-    "input_cost": "Цена входящих ресурсов касается себестоимости",
-    "commodity_revenue": "Цена сырья касается профильной выручки",
-    "tax_burden": "Налоговые условия касаются нагрузки на компанию",
-    "regulatory_cost": "Отраслевые правила касаются стоимости деятельности",
-    "guarantee_risk": "Санкционный контур касается гарантий и расчётов",
+    "debt_service_cost": "Событие касается стоимости вашего долга",
+    "deposit_yield": "Событие касается доходности размещённых средств",
+    "fx_cost": "Событие касается валютной стоимости операций",
+    "import_restrictions": "Событие касается внешнего торгового контура",
+    "labor_cost": "Событие касается расходов на персонал",
+    "demand_shift": "Событие касается выручки в вашей отрасли",
+    "input_cost": "Событие касается себестоимости и входящих ресурсов",
+    "commodity_revenue": "Событие касается профильной выручки",
+    "tax_burden": "Событие касается налоговой нагрузки на компанию",
+    "regulatory_cost": "Событие касается стоимости деятельности в отрасли",
+    "guarantee_risk": "Событие касается гарантий и расчётов",
 }
 _CONDITIONAL = {
     "debt_rate_type": "Тип ставки в данных банка неизвестен: если ставка плавающая, платёж может измениться, если фиксированная — нет.",
@@ -40,6 +40,13 @@ _PARTY = re.compile(r"\bпоставщик\w*\b|\bпокупател(?:ь|я|и|
 TAIL_MARK = " [хвост удалён]"
 _CFO_FIRST = ("debt_service_cost", "fx_cost", "labor_cost")
 _REVENUE_MECHANISMS = {"demand_shift", "commodity_revenue"}
+
+
+def _pick_alfa_card(cards: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not cards:
+        return None
+    preferred = [card for card in cards if str(card.get("claim_type") or "") in BANK_VIEW_TYPES]
+    return (preferred or cards)[0]
 
 
 def _features(state: dict) -> dict[str, Any]:
@@ -166,21 +173,70 @@ def clip_text(text: str, limit: int) -> str:
     return body[:keep] + TAIL_MARK
 
 
+def _fact_ref(fact: dict[str, Any]) -> str:
+    return f"fact:{fact.get('id') or 'f1'}"
+
+
+def _primary_fact_refs(facts: list[dict[str, Any]]) -> list[str]:
+    refs = [_fact_ref(fact) for fact in facts if fact.get("claim")]
+    return refs or ["fact:f1"]
+
+
 def build_context_pack(state: dict, config: AgentConfig) -> str:
     evidence = state.get("evidence") or {}
     budget = config.context_tokens * config.chars_per_token
     features = _public_features(_features(state), config)
     synthetic = not _closed_ok(config)
-    facts = [wrap_data(str(fact.get("claim") or "")) for fact in (evidence.get("event") or {}).get("facts") or []]
+    fact_lines = []
+    for fact in (evidence.get("event") or {}).get("facts") or []:
+        claim = wrap_data(str(fact.get("claim") or ""))
+        span = str(fact.get("evidence_span") or "")
+        locator = []
+        if fact.get("url"):
+            locator.append(str(fact["url"]))
+        if fact.get("char_start") is not None and fact.get("char_end") is not None:
+            locator.append(f"chars {fact['char_start']}-{fact['char_end']}")
+        pubs = fact.get("echo_publishers") or []
+        if pubs:
+            locator.append("echo=" + ",".join(pubs))
+        line = f"[{_fact_ref(fact)}] {claim}"
+        if span and span != claim.rstrip("."):
+            line += f"\n  span: {wrap_data(span)}"
+        if locator:
+            line += f"\n  loc: {'; '.join(locator)}"
+        fact_lines.append(line)
     mechanisms = ", ".join(state.get("mechanism_ids") or []) or "нет"
     profile_note = "Профиль синтетический: суммы и идентификаторы сняты." if synthetic else "Признаки компании."
     sections = [
-        "Факты события:\n" + ("\n".join(facts) or "нет"),
+        "Факты события:\n" + ("\n".join(fact_lines) or "нет"),
         f"Механизмы: {mechanisms}. {profile_note} Признаки: {features}.",
     ]
-    cards = [wrap_data(str(card.get("claim") or "")) for card in evidence.get("cards") or []]
+    cards = []
+    for card in evidence.get("cards") or []:
+        page = card.get("page")
+        bbox = card.get("bbox_rel")
+        loc = f" page={page}" if page else ""
+        if bbox:
+            loc += f" bbox={bbox}"
+        cards.append(wrap_data(str(card.get("claim") or "")) + f" [{card.get('card_id')}]{loc}")
     if cards:
         sections.append("Карточки Альфа-Банка:\n" + "\n".join(cards))
+    news_bits = []
+    for item in evidence.get("news") or []:
+        news_bits.append(
+            f"{item.get('title') or item.get('event_id')}: {wrap_data(str(item.get('summary') or item.get('text') or '')[:400])}"
+            + (f" url={item.get('url')}" if item.get("url") else "")
+        )
+    if news_bits:
+        sections.append("Смежные новости:\n" + "\n".join(news_bits))
+    stats_bits = []
+    for item in evidence.get("stats") or []:
+        stats_bits.append(
+            f"{item.get('indicator')}: value={item.get('value')} {item.get('unit') or ''} "
+            f"({item.get('source')}; {item.get('note') or ''})"
+        )
+    if stats_bits:
+        sections.append("Внешняя статистика:\n" + "\n".join(stats_bits))
     calcs = [str(item.get("text") or "") for item in state.get("calc_results") or []]
     if calcs:
         sections.append("Расчёты:\n" + "\n".join(calcs))
@@ -203,20 +259,60 @@ def template_draft(state: dict, config: AgentConfig) -> dict[str, Any]:
     features = _features(state)
     evidence = state.get("evidence") or {}
     event = evidence.get("event") or {}
-    fact = ((event.get("facts") or [{}])[0]).get("claim") or "Событие получено."
+    facts = [item for item in (event.get("facts") or []) if str(item.get("claim") or "").strip()]
     impact = assess_impact(state, config)
-    claims: list[dict[str, Any]] = [
-        {"id": "c_fact", "layer": "fact", "text": fact, "refs": ["fact:f1"]},
-    ]
-    cards = list(evidence.get("cards") or [])
-    if cards:
-        card = cards[0]
+    claims: list[dict[str, Any]] = []
+    for index, fact in enumerate(facts, start=1):
+        refs = [f"fact:{fact.get('id') or f'f{index}'}"]
+        for extra in fact.get("source_ids") or []:
+            if extra not in refs:
+                refs.append(str(extra))
         claims.append(
             {
-                "id": "c_alfa",
+                "id": f"c_fact_{fact.get('id') or index}",
+                "layer": "fact",
+                "text": str(fact.get("claim") or "").strip(),
+                "refs": refs,
+                "evidence": refs[:1],
+            }
+        )
+    if not claims:
+        claims.append(
+            {
+                "id": "c_fact_f1",
+                "layer": "fact",
+                "text": "Событие получено.",
+                "refs": ["fact:f1"],
+                "evidence": ["fact:f1"],
+            }
+        )
+    fact_refs = _primary_fact_refs(facts)
+    cards = list(evidence.get("cards") or [])
+    # Несколько карточек: bank-view + факт/прогноз по теме, без схлопывания в одну.
+    used_cards: list[dict[str, Any]] = []
+    bank = _pick_alfa_card(cards)
+    if bank is not None:
+        used_cards.append(bank)
+    for card in cards:
+        if card in used_cards:
+            continue
+        if str(card.get("claim_type") or "") not in BANK_VIEW_TYPES:
+            used_cards.append(card)
+            break
+    for offset, card in enumerate(used_cards):
+        claim_text = str(card["claim"] or "").strip()
+        lowered = claim_text.lower()
+        if lowered.startswith("альфа-банк ") or lowered.startswith("альфа-банка "):
+            rest = claim_text.split(" ", 1)[1]
+            alfa_text = f"По оценке Альфа-Банка, {rest}"
+        else:
+            alfa_text = f"По оценке Альфа-Банка, {claim_text}"
+        claims.append(
+            {
+                "id": "c_alfa" if offset == 0 else f"c_alfa_{offset}",
                 "layer": "alfa",
-                "text": f"По оценке Альфа-Банка, {card['claim']}",
-                "refs": [f"card:{card['card_id']}"],
+                "text": alfa_text,
+                "refs": [str(card["card_id"])],
             }
         )
     reasons = state.get("reasons") or {}
@@ -272,8 +368,8 @@ def template_draft(state: dict, config: AgentConfig) -> dict[str, Any]:
                 "id": "c_hyp",
                 "layer": "hypothesis",
                 "text": "Если недостающие сведения появятся, масштаб эффекта станет конкретнее. Пока это предположение, а не подтверждённый факт.",
-                "refs": ["fact:f1"],
-                "evidence": ["fact:f1"],
+                "refs": list(fact_refs[:1]),
+                "evidence": list(fact_refs[:1]),
                 "confidence": 0.35,
             }
         )
@@ -294,16 +390,29 @@ def template_draft(state: dict, config: AgentConfig) -> dict[str, Any]:
         assumptions.append("Количественная оценка иллюстративная и не относится к сумме по компании.")
     headline = _HEADLINES.get((state.get("mechanism_ids") or [""])[0], "Событие связано с профилем компании")
     if not state.get("mechanism_ids"):
-        claims.append(
-            {
-                "id": "c_model_none",
-                "layer": "model",
-                "text": "Отбор не связал событие с механизмом компании, поэтому персональный вывод ограничен.",
-                "refs": [],
-                "feature_refs": ["industry_group"],
-            }
-        )
-        headline = "Событие не связано с механизмом компании"
+        summary = str(((state.get("views") or {}).get("explanation") or state.get("explanation") or {}).get("summary") or "").strip()
+        if summary:
+            claims.append(
+                {
+                    "id": "c_model_profile",
+                    "layer": "model",
+                    "text": summary,
+                    "refs": [],
+                    "feature_refs": ["industry_group"],
+                }
+            )
+            headline = "Событие связано с профилем компании"
+        else:
+            claims.append(
+                {
+                    "id": "c_model_none",
+                    "layer": "model",
+                    "text": "Персональный вывод ограничен: в профиле нет признаков, которые связывают событие с механизмом компании.",
+                    "refs": [],
+                    "feature_refs": ["industry_group"],
+                }
+            )
+            headline = "Связь с профилем компании не подтверждена"
     by_layer = lambda layer: [item["id"] for item in claims if item["layer"] == layer]
     why = by_layer("model") + by_layer("alfa")
     watch = by_layer("hypothesis")
@@ -327,7 +436,7 @@ def template_draft(state: dict, config: AgentConfig) -> dict[str, Any]:
                 "name": "условный масштаб",
                 "logic": "Если недостающие данные появятся, масштаб эффекта станет конкретнее.",
                 "plausibility": "medium",
-                "support_refs": ["fact:f1"],
+                "support_refs": list(fact_refs[:1]),
             }
         ],
         "assumptions": assumptions,

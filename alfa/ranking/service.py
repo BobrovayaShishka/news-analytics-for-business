@@ -214,6 +214,7 @@ class RankingService:
                     graph_signal=view["graph_signal"],
                     analytics_refs=view["analytics_refs"],
                     above_threshold=view["above_threshold"],
+                    summary=view.get("summary") or "",
                 )
             )
         return pairs
@@ -397,6 +398,8 @@ class RankingService:
             hypotheses=view["hypotheses"],
             eligible=view["eligible"],
             above_threshold=view["above_threshold"],
+            summary=view.get("summary") or "",
+            signals=list(view.get("signals") or []),
         )
 
     def feature_view(self, client_id: str) -> dict:
@@ -420,13 +423,18 @@ class RankingService:
             "has_factoring": row.has_factoring,
             "has_group": bool(row.group_id),
             "reliability": row.reliability,
+            "market_rank": row.market_rank,
+            "market_peers": row.market_peers,
+            "market_okved2": row.market_okved2,
         }
 
     def _item(self, pair: ScoredPair) -> FeedItem:
         reasons = []
+        if pair.summary:
+            reasons.append(pair.summary)
         for mechanism in pair.mechanism_ids:
             text = self.config.reason(mechanism)
-            if text not in reasons:
+            if text and text not in reasons:
                 reasons.append(text)
         return FeedItem(
             event_id=pair.event_id,
@@ -439,6 +447,7 @@ class RankingService:
             analytics_refs=list(pair.analytics_refs),
             flags=list(pair.flags),
             hypotheses=list(pair.hypotheses),
+            summary=pair.summary,
         )
 
     def _empty_feed(self, client_id: str, reason: str, role: str | None) -> Feed:
@@ -537,6 +546,8 @@ def score_incremental(as_of: datetime) -> list[ScoredPair]:
 
 def event_from_parts(doc, extraction, magnitude: float = 0.0) -> RankEvent:
     """Сшивка NewsDoc и EventExtraction. Тип не выдумывается: пустой тип → irrelevant."""
+    from alfa.core.grounding import facts_from_extraction
+
     event_type = extraction.event_type.value if getattr(extraction, "event_type", None) else "irrelevant"
     status = extraction.extraction_status
     status_value = status.value if hasattr(status, "value") else str(status)
@@ -545,7 +556,22 @@ def event_from_parts(doc, extraction, magnitude: float = 0.0) -> RankEvent:
         {"text": entity.text, "type": entity.type.value if hasattr(entity.type, "value") else str(entity.type)}
         for entity in extraction.entities
     ]
-    facts = "|".join((fact.value or "") for fact in extraction.facts)
+    signature = "|".join((fact.value or "") for fact in extraction.facts)
+    fact_rows = facts_from_extraction(
+        extraction.facts,
+        text=doc.text or "",
+        title=doc.title or "",
+        url=getattr(doc, "url", None) or "",
+        publisher=getattr(doc, "source", None) or "",
+    )
+    risks = [
+        {"text": note.text, "evidence_span": note.evidence_span}
+        for note in (extraction.risks or [])
+    ]
+    opportunities = [
+        {"text": note.text, "evidence_span": note.evidence_span}
+        for note in (extraction.opportunities or [])
+    ]
     return RankEvent(
         event_id=doc.id,
         event_type=event_type,
@@ -556,11 +582,17 @@ def event_from_parts(doc, extraction, magnitude: float = 0.0) -> RankEvent:
         trust_tier=doc.trust_tier,
         cluster_id=doc.cluster_id or doc.id,
         revision=int(doc.revision),
-        fact_signature=facts,
+        fact_signature=signature,
         magnitude=magnitude,
         n_sources=1 + len(doc.echo_sources),
         echo_count=int(doc.echo_count),
         entities=entities,
         title=doc.title,
         text=doc.text,
+        url=str(getattr(doc, "url", "") or ""),
+        source=str(getattr(doc, "source", "") or ""),
+        facts=fact_rows,
+        risks=risks,
+        opportunities=opportunities,
+        echo_sources=list(doc.echo_sources or []),
     )

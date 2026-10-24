@@ -1,4 +1,8 @@
-"""Checkpoint инсайта: состояние, ответы пользователя, обратная связь."""
+"""Долгоживущий checkpoint агента: инсайт, state, journal, ответы, feedback.
+
+Это единственная персистентность между прогонами графа (generate → answer → chat).
+LangGraph checkpointer не используется: store.json переживает рестарт процесса.
+"""
 
 from __future__ import annotations
 
