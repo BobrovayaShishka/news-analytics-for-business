@@ -71,4 +71,6 @@ python -m alfa.ranking.bench --smoke
 
 Схема новости: `schemas/news_item.schema.json`.
 
+Масштабирование на отрасли, типы клиентов, источники данных и сопровождение (мониторинг, карточки, новый механизм без правок Python) — в [OPERATIONS.md](OPERATIONS.md).
+
 Если установлен make: `make profiles`, `make ingest`, `make feed`, `make test`.

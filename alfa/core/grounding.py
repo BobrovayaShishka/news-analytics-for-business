@@ -85,7 +85,7 @@ def split_sentences(raw: str) -> list[str]:
 
 
 def _numbers(text: str) -> set[str]:
-    return textcheck._numbers_in(text or "")
+    return textcheck.numbers_in(text or "")
 
 
 def _dates(text: str) -> set[tuple[int, int, int]]:

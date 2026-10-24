@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from alfa.agent.chat_followup import append_claim, apply_clarify, apply_source, model_anchor, model_claim
 from alfa.agent.contract import assemble_insight
 from alfa.agent.interpret import template_draft
 from alfa.agent.verify import apply_critic_status, decide, naked_numbers, run_critic, should_call_critic, verify_stage1
@@ -53,20 +54,8 @@ def answer_followup(runtime, record: dict[str, Any], question: str, cut: str | N
             "ts": state.get("as_of"),
         }
     )
-    if intent in {"source", "clarify"}:
-        insight = dict(record["insight"])
-        flags = list(insight.get("flags") or [])
-        flag = "source_lookup" if intent == "source" else "clarify"
-        if flag not in flags:
-            flags.append(flag)
-        insight["flags"] = flags
-        state["journal"].append({"type": "decision", "kind": intent, "new_claims": False})
-        record["journal"] = state["journal"]
-        record["insight"] = insight
-        runtime.store.save()
-        return insight
     original_ids = {claim.get("id") for claim in (state.get("draft") or {}).get("claims") or []}
-    draft = _follow_draft(runtime, state, intent, cut)
+    draft = _follow_draft(runtime, state, intent, cut, question)
     draft.pop("extra_sources", None)
     stage1 = verify_stage1(draft, state, runtime.config)
     stage2 = {"issues": [], "backend": "skipped"}
@@ -82,6 +71,10 @@ def answer_followup(runtime, record: dict[str, Any], question: str, cut: str | N
         flags.append("out_of_scope")
     elif intent == "limit":
         flags.append("chat_limit")
+    elif intent == "source":
+        flags.append("source_lookup")
+    elif intent == "clarify":
+        flags.append("clarify")
     else:
         flags.append(f"cut:{cut}")
     state["draft"] = draft
@@ -112,7 +105,7 @@ def _same_question(journal: list[dict], question: str) -> bool:
     return False
 
 
-def _follow_draft(runtime, state: dict, intent: str, cut: str | None) -> dict:
+def _follow_draft(runtime, state: dict, intent: str, cut: str | None, question: str = "") -> dict:
     base = json_copy(state.get("draft") or {}) or template_draft(state, runtime.config)
     if not base.get("claims"):
         base = template_draft(state, runtime.config)
@@ -122,7 +115,13 @@ def _follow_draft(runtime, state: dict, intent: str, cut: str | None) -> dict:
             if intent == "refuse"
             else "Лимит диалога по этому инсайту исчерпан."
         )
-        _append_claim(base, _model_claim(state, "c_refuse" if intent == "refuse" else "c_limit", text), "why_it_matters")
+        append_claim(base, model_claim(state, "c_refuse" if intent == "refuse" else "c_limit", text), "why_it_matters")
+        return base
+    if intent == "source":
+        apply_source(state, base)
+        return base
+    if intent == "clarify":
+        apply_clarify(state, base, question)
         return base
     _apply_cut(runtime, state, base, cut or "")
     return base
@@ -141,15 +140,15 @@ def _apply_cut(runtime, state: dict, draft: dict, cut: str) -> None:
         claim = _claim_from_cut(cut, tool, result.data, state)
         if claim is None:
             continue
-        _append_claim(draft, claim, "why_it_matters" if claim["layer"] == "model" else "what_happened")
+        append_claim(draft, claim, "why_it_matters" if claim["layer"] == "model" else "what_happened")
         produced = True
     if cut == "scenario":
         claim = _scenario_claim(state)
         if claim is not None:
-            _append_claim(draft, claim, "why_it_matters")
+            append_claim(draft, claim, "why_it_matters")
             produced = True
     if not produced:
-        _append_claim(draft, _empty_slice_claim(state), "what_happened")
+        append_claim(draft, _empty_slice_claim(state), "what_happened")
 
 
 def _cut_steps(cut: str, state: dict, mechanisms: set[str]) -> list[tuple[str, dict]]:
@@ -195,7 +194,7 @@ def _absorb_cut(state: dict, tool: str, data: dict) -> None:
 
 def _claim_from_cut(cut: str, tool: str, data: dict, state: dict) -> dict | None:
     if tool == "calc" and data.get("calc_id"):
-        anchor = _model_anchor(state)
+        anchor = model_anchor(state)
         return {
             "id": f"c_cut_{cut}_{data['fn']}",
             "layer": "model",
@@ -206,15 +205,15 @@ def _claim_from_cut(cut: str, tool: str, data: dict, state: dict) -> dict | None
             "calc_refs": [data["calc_id"]],
         }
     if tool == "get_profile_view" and cut in {"cost_side", "credit_portfolio"}:
-        return _model_claim(state, f"c_cut_{cut}_profile", "Срез собран из профиля компании и уже посчитанного расчёта.")
+        return model_claim(state, f"c_cut_{cut}_profile", "Срез собран из профиля компании и уже посчитанного расчёта.")
     if tool == "get_counterparties":
         if not (data.get("counterparties") or []):
             return None
-        return _model_claim(state, "c_cut_counterparties", "Платёжное окружение в этом срезе показано обезличенно.")
+        return model_claim(state, "c_cut_counterparties", "Платёжное окружение в этом срезе показано обезличенно.")
     if tool == "get_group_context":
         if not data.get("in_group"):
             return None
-        return _model_claim(state, "c_cut_group", "Компания входит в группу, состав показан агрегатом без идентификаторов.")
+        return model_claim(state, "c_cut_group", "Компания входит в группу, состав показан агрегатом без идентификаторов.")
     return None
 
 
@@ -227,35 +226,11 @@ def _scenario_claim(state: dict) -> dict | None:
     text = " ".join(f"{item.get('name')}: {item.get('logic')}" for item in scenarios)
     if naked_numbers(text) - naked_numbers(corpus):
         text = "В черновике уже есть сценарии, новый поиск не выполнялся."
-    return _model_claim(state, "c_cut_scenario", text)
+    return model_claim(state, "c_cut_scenario", text)
 
 
 def _empty_slice_claim(state: dict) -> dict:
     return {"id": "c_cut_empty", "layer": "fact", "text": _NO_SLICE, "refs": [_known_source(state)]}
-
-
-def _model_claim(state: dict, claim_id: str, text: str) -> dict:
-    anchor = _model_anchor(state)
-    return {
-        "id": claim_id,
-        "layer": "model",
-        "text": text,
-        "refs": [],
-        "feature_refs": anchor["feature_refs"],
-        "mechanism_id": anchor["mechanism_id"],
-        "calc_refs": [],
-    }
-
-
-def _model_anchor(state: dict) -> dict[str, Any]:
-    features = ((state.get("views") or {}).get("profile") or {}).get("features") or {}
-    feature = next((name for name, value in features.items() if value is not None), None)
-    mechanisms = list(state.get("mechanism_ids") or [])
-    if feature:
-        return {"feature_refs": [feature], "mechanism_id": mechanisms[0] if mechanisms else None}
-    if mechanisms:
-        return {"feature_refs": [], "mechanism_id": mechanisms[0]}
-    return {"feature_refs": ["industry_group"], "mechanism_id": None}
 
 
 def _known_source(state: dict) -> str:
@@ -269,19 +244,6 @@ def _known_source(state: dict) -> str:
         if str(key).startswith("fact:"):
             return str(key)
     return "fact:f1"
-
-
-def _append_claim(draft: dict, claim: dict, section: str) -> None:
-    claims = list(draft.get("claims") or [])
-    if any(item.get("id") == claim["id"] for item in claims):
-        claim = dict(claim)
-        claim["id"] = f"{claim['id']}_2"
-    claims.append(claim)
-    draft["claims"] = claims
-    ids = list(draft.get(section) or [])
-    if claim["id"] not in ids:
-        ids.append(claim["id"])
-    draft[section] = ids
 
 
 def _drop_new_blocking(draft, state, runtime, original_ids, issues, stage2):

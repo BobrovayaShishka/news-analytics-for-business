@@ -18,6 +18,7 @@ from alfa.settings import load_profile_config
 CONFIG_DIR = PACKAGE_ROOT / "config"
 AGENT_PATH = CONFIG_DIR / "agent.yaml"
 MECHANISMS_PATH = CONFIG_DIR / "mechanisms.yaml"
+CONSEQUENCES_PATH = CONFIG_DIR / "consequences.yaml"
 RUBRIC_PATH = CONFIG_DIR / "impact_rubric.yaml"
 
 TOOL_NAMES = frozenset(
@@ -79,6 +80,22 @@ class QuestionSpec:
     text: str
     why_asked: str
     options: list[dict[str, str]]
+    short_label: str = ""
+    unknown_label: str = ""
+    known_phrases: dict[str, str] = field(default_factory=dict)
+    value_labels: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class MechanismPresentation:
+    headline: str = ""
+    headlines: tuple[dict[str, Any], ...] = ()
+    factor: str = ""
+    factor_parts: tuple[dict[str, Any], ...] = ()
+    effect: str = ""
+    feature_ref: str = "industry_group"
+    feature_ref_prefer: tuple[dict[str, Any], ...] = ()
+    tags: tuple[str, ...] = ()
 
 
 @dataclass
@@ -89,14 +106,51 @@ class MechanismSpec:
     critical_fields: tuple[str, ...]
     optional_fields: tuple[str, ...]
     changes_conclusion: tuple[str, ...]
+    risk_template: str
+    opportunity_template: str
+    watch_template: str
     tools: tuple[ToolStep, ...]
     optional_tools: tuple[ToolStep, ...]
+    presentation: MechanismPresentation = field(default_factory=MechanismPresentation)
+
+    @property
+    def headline(self) -> str:
+        return self.presentation.headline
+
+    @property
+    def headlines(self) -> tuple[dict[str, Any], ...]:
+        return self.presentation.headlines
+
+    @property
+    def factor(self) -> str:
+        return self.presentation.factor
+
+    @property
+    def factor_parts(self) -> tuple[dict[str, Any], ...]:
+        return self.presentation.factor_parts
+
+    @property
+    def effect(self) -> str:
+        return self.presentation.effect
+
+    @property
+    def feature_ref(self) -> str:
+        return self.presentation.feature_ref
+
+    @property
+    def feature_ref_prefer(self) -> tuple[dict[str, Any], ...]:
+        return self.presentation.feature_ref_prefer
+
+    @property
+    def tags(self) -> tuple[str, ...]:
+        return self.presentation.tags
 
 
 @dataclass
 class AgentConfig:
     raw: dict[str, Any]
     mechanisms_raw: dict[str, Any]
+    consequences: dict[str, Any]
     rubric: dict[str, Any]
     mechanisms: dict[str, MechanismSpec]
     questions: dict[str, QuestionSpec]
@@ -127,6 +181,8 @@ class AgentConfig:
     data_policy: dict[str, Any]
     base_tools: tuple[ToolStep, ...]
     optional_tools: tuple[ToolStep, ...] = field(default_factory=tuple)
+    role_presentation: dict[str, Any] = field(default_factory=dict)
+    presentation: dict[str, str] = field(default_factory=dict)
 
     def prompt_path(self, name: str):
         version = self.prompt_versions[name]
@@ -150,13 +206,54 @@ def _questions(raw: dict[str, Any]) -> dict[str, QuestionSpec]:
         options = []
         for option in payload.get("options") or []:
             options.append({"label": str(option["label"]), "value": str(option["value"])})
+        phrases = {
+            str(key): str(value)
+            for key, value in (payload.get("known_phrases") or {}).items()
+        }
+        value_labels = {
+            str(key): str(value)
+            for key, value in (payload.get("value_labels") or {}).items()
+        }
         output[str(field_name)] = QuestionSpec(
             field=str(field_name),
             text=str(payload["text"]),
             why_asked=str(payload["why_asked"]),
             options=options,
+            short_label=str(payload.get("short_label") or ""),
+            unknown_label=str(payload.get("unknown_label") or ""),
+            known_phrases=phrases,
+            value_labels=value_labels,
         )
     return output
+
+
+def _presentation(payload: dict[str, Any], name: str) -> dict[str, Any]:
+    block = payload.get("presentation")
+    if not isinstance(block, dict):
+        raise ValueError(f"{name}: нужен блок presentation (headline, factor, effect, feature_ref)")
+    headline = str(block.get("headline") or "").strip()
+    factor = str(block.get("factor") or "").strip()
+    effect = str(block.get("effect") or "").strip()
+    feature_ref = str(block.get("feature_ref") or "").strip()
+    if not headline or not factor or not effect or not feature_ref:
+        raise ValueError(f"{name}: presentation требует headline, factor, effect, feature_ref")
+    headlines = tuple(dict(item) for item in (block.get("headlines") or []) if isinstance(item, dict))
+    factor_parts = tuple(dict(item) for item in (block.get("factor_parts") or []) if isinstance(item, dict))
+    prefer = tuple(dict(item) for item in (block.get("feature_ref_prefer") or []) if isinstance(item, dict))
+    for item in prefer:
+        if not item.get("ref"):
+            raise ValueError(f"{name}: feature_ref_prefer требует ref")
+    tags = tuple(str(item) for item in (block.get("tags") or []))
+    return {
+        "headline": headline,
+        "headlines": headlines,
+        "factor": factor,
+        "factor_parts": factor_parts,
+        "effect": effect,
+        "feature_ref": feature_ref,
+        "feature_ref_prefer": prefer,
+        "tags": tags,
+    }
 
 
 def _check_optional(steps: tuple[ToolStep, ...], where: str) -> None:
@@ -170,6 +267,12 @@ def _mechanisms(raw: dict[str, Any]) -> dict[str, MechanismSpec]:
     for name, payload in (raw.get("mechanisms") or {}).items():
         optional = _steps(payload.get("optional_tools"), required=False)
         _check_optional(optional, name)
+        risk = str(payload.get("risk_template") or "").strip()
+        opportunity = str(payload.get("opportunity_template") or "").strip()
+        watch = str(payload.get("watch_template") or "").strip()
+        if not risk or not opportunity or not watch:
+            raise ValueError(f"{name}: нужны risk_template, opportunity_template и watch_template")
+        present = _presentation(payload, name)
         output[str(name)] = MechanismSpec(
             mechanism_id=str(name),
             directness=str(payload.get("directness") or "direct"),
@@ -177,10 +280,67 @@ def _mechanisms(raw: dict[str, Any]) -> dict[str, MechanismSpec]:
             critical_fields=tuple(str(item) for item in payload.get("critical_fields") or []),
             optional_fields=tuple(str(item) for item in payload.get("optional_fields") or []),
             changes_conclusion=tuple(str(item) for item in payload.get("changes_conclusion") or []),
+            risk_template=risk,
+            opportunity_template=opportunity,
+            watch_template=watch,
             tools=_steps(payload.get("tools"), required=True),
             optional_tools=optional,
+            presentation=MechanismPresentation(
+                headline=present["headline"],
+                headlines=present["headlines"],
+                factor=present["factor"],
+                factor_parts=present["factor_parts"],
+                effect=present["effect"],
+                feature_ref=present["feature_ref"],
+                feature_ref_prefer=present["feature_ref_prefer"],
+                tags=present["tags"],
+            ),
         )
     return output
+
+
+def _require_consequences(consequences: dict[str, Any], mechanisms: dict[str, MechanismSpec]) -> None:
+    by_field = consequences.get("by_field") or {}
+    if not isinstance(by_field, dict):
+        raise ValueError("consequences.yaml: by_field must be a mapping")
+    for field_name, values in by_field.items():
+        if not isinstance(values, dict):
+            raise ValueError(f"consequences.yaml: by_field.{field_name} must be a mapping")
+        for value, mechs in values.items():
+            if not isinstance(mechs, dict):
+                raise ValueError(f"consequences.yaml: by_field.{field_name}.{value} must be a mapping")
+            for mechanism_id in mechs:
+                if mechanism_id not in mechanisms:
+                    raise ValueError(f"consequences.yaml: unknown mechanism in by_field: {mechanism_id}")
+    matrix = consequences.get("event_matrix") or {}
+    if not isinstance(matrix, dict):
+        raise ValueError("consequences.yaml: event_matrix must be a mapping")
+    for event_type, mechs in matrix.items():
+        if not isinstance(mechs, dict):
+            raise ValueError(f"consequences.yaml: event_matrix.{event_type} must be a mapping")
+        for mechanism_id in mechs:
+            if mechanism_id not in mechanisms:
+                raise ValueError(f"consequences.yaml: unknown mechanism in event_matrix: {mechanism_id}")
+    scenario_matrix = consequences.get("scenario_matrix") or {}
+    if not isinstance(scenario_matrix, dict):
+        raise ValueError("consequences.yaml: scenario_matrix must be a mapping")
+    for field_name, values in scenario_matrix.items():
+        if not isinstance(values, dict):
+            raise ValueError(f"consequences.yaml: scenario_matrix.{field_name} must be a mapping")
+        for value, items in values.items():
+            if not isinstance(items, list):
+                raise ValueError(f"consequences.yaml: scenario_matrix.{field_name}.{value} must be a list")
+            for index, item in enumerate(items):
+                path = f"scenario_matrix.{field_name}.{value}[{index}]"
+                if not isinstance(item, dict):
+                    raise ValueError(f"consequences.yaml: {path} must be a mapping")
+                if not str(item.get("name") or "").strip():
+                    raise ValueError(f"consequences.yaml: {path}.name required")
+                if not str(item.get("logic") or "").strip():
+                    raise ValueError(f"consequences.yaml: {path}.logic required")
+                plausibility = str(item.get("plausibility") or "medium").strip()
+                if plausibility not in {"low", "medium", "high"}:
+                    raise ValueError(f"consequences.yaml: {path}.plausibility must be low|medium|high")
 
 
 def _require_alignment(mechanisms: dict[str, MechanismSpec]) -> None:
@@ -213,10 +373,12 @@ def _require_alignment(mechanisms: dict[str, MechanismSpec]) -> None:
 def load_agent_config() -> AgentConfig:
     raw = _read(AGENT_PATH)
     mechanisms_raw = _read(MECHANISMS_PATH)
+    consequences = _read(CONSEQUENCES_PATH)
     rubric = _read(RUBRIC_PATH)
     mechanisms = _mechanisms(mechanisms_raw)
     questions = _questions(mechanisms_raw)
     _require_alignment(mechanisms)
+    _require_consequences(consequences, mechanisms)
     base_tools = _steps(raw.get("base_tools"), required=True)
     optional_tools = _steps(raw.get("optional_tools"), required=False)
     _check_optional(optional_tools, "agent.yaml")
@@ -227,6 +389,7 @@ def load_agent_config() -> AgentConfig:
     return AgentConfig(
         raw=raw,
         mechanisms_raw=mechanisms_raw,
+        consequences=consequences,
         rubric=rubric,
         mechanisms=mechanisms,
         questions=questions,
@@ -257,4 +420,6 @@ def load_agent_config() -> AgentConfig:
         data_policy=dict(raw.get("data_policy") or {}),
         base_tools=base_tools,
         optional_tools=optional_tools,
+        role_presentation=dict(raw.get("role_presentation") or {}),
+        presentation={str(key): str(value) for key, value in (raw.get("presentation") or {}).items()},
     )

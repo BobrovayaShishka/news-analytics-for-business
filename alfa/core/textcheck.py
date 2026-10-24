@@ -72,7 +72,8 @@ def _canonical_number(token: str) -> str | None:
     return str(int(raw))
 
 
-def _numbers_in(text: str) -> set[str]:
+def numbers_in(text: str) -> set[str]:
+    """Канонические числа из текста (публичный helper для interpret/verify/grounding)."""
     found: set[str] = set()
     for match in _NUMBER.finditer(normalize_ws(text)):
         canon = _canonical_number(match.group(0))
@@ -96,7 +97,7 @@ def number_in_text(value: str | None, text: str) -> bool:
     pieces = _number_pieces(str(value))
     if not pieces:
         return normalize_ws(str(value)).lower() in normalize_ws(text).lower()
-    present = _numbers_in(text)
+    present = numbers_in(text)
     return all(piece in present for piece in pieces)
 
 

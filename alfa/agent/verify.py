@@ -37,7 +37,19 @@ _CRITIC_TYPES = {
     "layer_violation",
     "incomplete",
     "impact_inconsistent",
+    "paraphrase_only",
+    "single_factor",
+    "no_consequence",
+    "news_only_risks",
+    "impact_rationale_boilerplate",
 }
+_CRITIC_TYPE_LIST = (
+    "ungrounded, unjustified_inference, contradiction, misleading, overclaim, "
+    "layer_violation, incomplete, impact_inconsistent, paraphrase_only, "
+    "single_factor, no_consequence, news_only_risks, impact_rationale_boilerplate"
+)
+_RATIONALE_BOILERPLATE = re.compile(r"уровень\s+посчитан\s+по\s+рубрике", re.IGNORECASE)
+_SCENARIO_STUB = re.compile(r"условный\s+масштаб|масштаб\s+эффекта\s+остаётся\s+неопределённ", re.IGNORECASE)
 _ALLOWED_CONTRACT = {"deposit_yield", "debt_service_cost"}
 _CATEGORICAL = re.compile(r"\b(точно|обязательно|гарантированно|неизбежно)\b", re.IGNORECASE)
 _CUE = re.compile(r"если|при условии|когда|неизвест|не извест|нет данных|вы указали", re.IGNORECASE)
@@ -57,11 +69,54 @@ def naked_numbers(text: str) -> set[str]:
     stripped = textcheck._ISO_DATE.sub(" ", text or "")
     stripped = textcheck._DOT_DATE.sub(" ", stripped)
     stripped = textcheck._NAMED_DATE.sub(" ", stripped)
-    return textcheck._numbers_in(stripped)
+    return textcheck.numbers_in(stripped)
 
 
 def _issue(claim_id: str, kind: str, severity: str, hint: str) -> dict[str, str]:
     return {"claim_id": claim_id, "type": kind, "severity": severity, "hint": hint}
+
+
+def _empty_consequence_issue(
+    items: list | None,
+    *,
+    cue: str,
+    label: str,
+    has_mechanisms: bool,
+    neutral_ok: bool,
+    news_absent_only: bool,
+    blob: str,
+) -> dict[str, str] | None:
+    """Пустые risks/opportunities: early-return таблица решений, без вложенных elif."""
+    if items is None:
+        return _issue("", "incomplete", "blocking", f"{label} не заданы")
+    if items:
+        return None
+    if not has_mechanisms:
+        if cue not in blob:
+            return _issue(
+                "",
+                "incomplete",
+                "blocking",
+                f"{label} не названы и не отмечены как отсутствующие",
+            )
+        return None
+    if neutral_ok:
+        return None
+    if news_absent_only or cue not in blob:
+        return _issue(
+            "",
+            "incomplete",
+            "blocking",
+            f"пустые {label} при механизмах: нужны клиентские формулировки "
+            f"или явный нейтральный эффект при текущих признаках",
+        )
+    # cue есть в assumptions, но нет нейтрального эффекта / news-absent закрытия
+    return _issue(
+        "",
+        "incomplete",
+        "blocking",
+        f"пустые {label} нельзя закрывать только отсутствием в тексте новости",
+    )
 
 
 def decide(issues: list[dict[str, str]]) -> str:
@@ -237,10 +292,32 @@ def verify_stage1(draft: dict | None, state: dict, config: AgentConfig) -> dict[
         if mechanism_id not in covered:
             issues.append(_issue("", "incomplete", "blocking", f"не покрыт механизм {mechanism_id}"))
     blob = " ".join(str(item) for item in draft.get("assumptions") or []).lower()
-    if draft.get("risks") is None or (draft.get("risks") == [] and "риск" not in blob):
-        issues.append(_issue("", "incomplete", "blocking", "риски не названы и не отмечены как отсутствующие"))
-    if draft.get("opportunities") is None or (draft.get("opportunities") == [] and "возможност" not in blob):
-        issues.append(_issue("", "incomplete", "blocking", "возможности не названы и не отмечены как отсутствующие"))
+    has_mechanisms = bool(mechanisms)
+    neutral_ok = bool(
+        re.search(r"нейтральн\w*\s+эффект|при текущих признак", blob, re.IGNORECASE)
+    )
+    news_absent_only = bool(
+        re.search(
+            r"в тексте (события )?не назван|отдельн\w+\s+риск\w*\s+в тексте|отдельн\w+\s+возможност\w*\s+в тексте",
+            blob,
+            re.IGNORECASE,
+        )
+    ) and not neutral_ok
+    for cue, label, items in (
+        ("риск", "риски", draft.get("risks")),
+        ("возможност", "возможности", draft.get("opportunities")),
+    ):
+        issue = _empty_consequence_issue(
+            items,
+            cue=cue,
+            label=label,
+            has_mechanisms=has_mechanisms,
+            neutral_ok=neutral_ok,
+            news_absent_only=news_absent_only,
+            blob=blob,
+        )
+        if issue is not None:
+            issues.append(issue)
     if not cards and not any(claim.get("layer") == "alfa" for claim in claims):
         issues.append(_issue("", "no_analytics", "minor", "нет карточки Альфа-Банка по теме"))
     for number in naked_numbers("\n".join(texts[:1] + list(draft.get("assumptions") or []))):
@@ -250,18 +327,121 @@ def verify_stage1(draft: dict | None, state: dict, config: AgentConfig) -> dict[
     return {"decision": decide(issues), "issues": issues}
 
 
+def _tokens(text: str) -> set[str]:
+    return {token for token in re.findall(r"[а-яёa-z0-9]+", (text or "").lower()) if len(token) > 2}
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _fact_surfaces(state: dict) -> list[str]:
+    evidence = state.get("evidence") or {}
+    event = evidence.get("event") or {}
+    surfaces: list[str] = []
+    title = str(event.get("title") or "").strip()
+    if title:
+        surfaces.append(title)
+    for fact in event.get("facts") or []:
+        claim = str(fact.get("claim") or "").strip()
+        if claim:
+            surfaces.append(claim)
+    return surfaces
+
+
+def _is_paraphrase_of_fact(text: str, state: dict) -> bool:
+    lowered = (text or "").lower().strip()
+    if not lowered:
+        return False
+    claim_tokens = _tokens(lowered)
+    for raw in _fact_surfaces(state):
+        raw_l = raw.lower().strip()
+        if not raw_l:
+            continue
+        surface = _tokens(raw_l)
+        overlap = _jaccard(claim_tokens, surface)
+        if overlap >= 0.85:
+            return True
+        if overlap >= 0.7 and (lowered == raw_l or lowered in raw_l or raw_l in lowered):
+            return True
+    return False
+
+
+def _norm_phrase(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").lower().strip())
+
+
+def _extraction_risks(state: dict) -> set[str]:
+    event = (state.get("evidence") or {}).get("event") or {}
+    return {_norm_phrase(str(item)) for item in event.get("risks") or [] if _norm_phrase(str(item))}
+
+
+def _draft_mechanisms(draft: dict) -> set[str]:
+    return {
+        str(claim.get("mechanism_id"))
+        for claim in draft.get("claims") or []
+        if claim.get("mechanism_id")
+    }
+
+
+def _has_consequence_scenario(draft: dict) -> bool:
+    for scenario in draft.get("scenarios") or []:
+        logic = str(scenario.get("logic") or "").strip()
+        if len(logic) < 24:
+            continue
+        if _SCENARIO_STUB.search(logic) and len(logic) < 90:
+            continue
+        return True
+    return False
+
+
+def _is_boilerplate_rationale(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    lowered = raw.lower()
+    if not _RATIONALE_BOILERPLATE.search(lowered):
+        return False
+    if "ключевые фактор" in lowered:
+        return False
+    if "не хватает данных" in lowered:
+        return False
+    cleaned = _RATIONALE_BOILERPLATE.sub(" ", lowered)
+    cleaned = re.sub(r"[.\s]+", " ", cleaned).strip()
+    # осталась только дефиниция рубрики / пусто — без факторов профиля
+    return len(_tokens(cleaned)) <= 12
+
+
+def _has_profile_or_calc(state: dict) -> bool:
+    features = ((state.get("views") or {}).get("profile") or {}).get("features") or {}
+    return bool(features) or bool(state.get("calc_results"))
+
+
 def heuristic_critic(draft: dict, state: dict) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     level = str(draft.get("impact_level") or "")
-    rationale = str(draft.get("impact_rationale") or "").lower()
+    rationale = str(draft.get("impact_rationale") or "")
+    rationale_l = rationale.lower()
     high_words = ("высокое влияние", "влияние высокое", "критично высок")
     low_words = ("влияние незначительное", "влияние низкое", "можно игнорировать")
-    if level == "low" and any(word in rationale for word in high_words):
+    if level == "low" and any(word in rationale_l for word in high_words):
         issues.append(_issue("impact", "impact_inconsistent", "blocking", "текст обоснования выше уровня рубрики"))
-    if level == "high" and any(word in rationale for word in low_words):
+    if level == "high" and any(word in rationale_l for word in low_words):
         issues.append(_issue("impact", "impact_inconsistent", "blocking", "текст обоснования ниже уровня рубрики"))
-    if level == "medium" and any(word in rationale for word in high_words + low_words):
+    if level == "medium" and any(word in rationale_l for word in high_words + low_words):
         issues.append(_issue("impact", "impact_inconsistent", "blocking", "текст обоснования не совпадает со средним уровнем"))
+    if _is_boilerplate_rationale(rationale):
+        issues.append(
+            _issue(
+                "impact",
+                "impact_rationale_boilerplate",
+                "blocking",
+                "impact_rationale только «Уровень посчитан по рубрике» без факторов",
+            )
+        )
+    why_ids = {str(item) for item in draft.get("why_it_matters") or []}
     for claim in draft.get("claims") or []:
         text = str(claim.get("text") or "")
         claim_id = str(claim.get("id") or "")
@@ -273,6 +453,42 @@ def heuristic_critic(draft: dict, state: dict) -> list[dict[str, str]]:
             issues.append(_issue(claim_id, "misleading", "blocking", "формулировка приуменьшает эффект"))
         if _LEAP.search(text):
             issues.append(_issue(claim_id, "unjustified_inference", "blocking", "вывод не следует из источников"))
+        if claim.get("layer") == "model" and claim_id in why_ids and _is_paraphrase_of_fact(text, state):
+            issues.append(_issue(claim_id, "paraphrase_only", "blocking", "модельный вывод только пересказывает факт"))
+    state_mechs = {str(item) for item in state.get("mechanism_ids") or [] if item}
+    if len(state_mechs) >= 2 and len(_draft_mechanisms(draft) & state_mechs) < 2:
+        issues.append(
+            _issue(
+                "",
+                "single_factor",
+                "blocking",
+                "в draft один механизм при len(mechanism_ids) >= 2",
+            )
+        )
+    risks = [str(item).strip() for item in draft.get("risks") or [] if str(item).strip()]
+    opps = [str(item).strip() for item in draft.get("opportunities") or [] if str(item).strip()]
+    if not risks and not opps and not _has_consequence_scenario(draft):
+        issues.append(
+            _issue(
+                "",
+                "no_consequence",
+                "blocking",
+                "нет риска, возможности и сценария с логикой последствий",
+            )
+        )
+    extraction = _extraction_risks(state)
+    if risks and extraction and _has_profile_or_calc(state):
+        draft_risk_set = {_norm_phrase(item) for item in risks}
+        if draft_risk_set and draft_risk_set <= extraction:
+            severity = "blocking" if level == "high" else "minor"
+            issues.append(
+                _issue(
+                    "",
+                    "news_only_risks",
+                    severity,
+                    "risks ⊆ extraction risks при наличии profile features / calc",
+                )
+            )
     return issues
 
 
@@ -298,9 +514,7 @@ def run_critic(draft: dict, state: dict, config: AgentConfig, llm: Any, *, llm_e
             model_config = ConfigDict(extra="forbid")
 
             claim_id: str = ""
-            type: str = Field(
-                description="ungrounded, unjustified_inference, contradiction, misleading, overclaim, layer_violation, incomplete, impact_inconsistent"
-            )
+            type: str = Field(description=_CRITIC_TYPE_LIST)
             severity: str = "minor"
             hint: str = ""
 
@@ -532,7 +746,16 @@ def apply_repair(draft: dict, issues: list[dict[str, str]], state: dict, config:
             have.add(claim.get("mechanism_id"))
     if not layer(kept, "hypothesis"):
         kept.extend(layer(safe["claims"], "hypothesis"))
-    rationale = safe["impact_rationale"] if any(item["type"] == "impact_inconsistent" for item in issues) else draft.get("impact_rationale") or safe["impact_rationale"]
+    force_safe_rationale = any(
+        item["type"] in {"impact_inconsistent", "impact_rationale_boilerplate"} for item in issues
+    )
+    rationale = (
+        safe["impact_rationale"]
+        if force_safe_rationale
+        else draft.get("impact_rationale") or safe["impact_rationale"]
+    )
+    # safe уже несёт клиентские risks/opportunities/scenarios — при no_consequence /
+    # news_only_risks / single_factor код-repair подменяет последствия шаблоном, не grounding.
     rebuilt = dict(safe)
     rebuilt.update(
         {

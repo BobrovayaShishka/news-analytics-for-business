@@ -1,5 +1,5 @@
-# Агентный слой. Критичные поля механизмов — в mechanisms.yaml.
-version: agent-v1
+# Агентный слой. Критичные поля и тексты механизмов — в mechanisms.yaml.
+version: agent-v2
 max_steps: 8
 max_repair: 2
 # Сколько раз после gather можно дописать optional-шаги (без удаления required).
@@ -13,14 +13,26 @@ prompt_retention_days: 30
 max_questions_per_insight: 1
 max_questions_per_session: 2
 min_priority: regular
+# Карточки аналитики старше порога помечаются stale; planner может добрать новости.
 stale_after_days: 60
 context_tokens: 2500
 chars_per_token: 4
+# Доля сессий, уходящих в выборочный мониторинг качества (verify / experiment).
 monitor_rate: 0.1
 # Chat follow-up: regex/cuts/templates by design (без LLM на classify/draft). Память — InsightStore.
 max_chat_turns: 6
 max_scenarios: 3
 disclaimer: "Аналитика не является инвестиционной рекомендацией"
+# Подсказки роли и порядок блоков — без хардкода в graph/interpret.
+role_presentation:
+  default: "Порядок: что произошло, почему важно, на что смотреть."
+  cfo: "В «почему важно» сначала стоимость денег. Факты не меняй."
+  ceo: "В «на что смотреть» сначала устойчивость выручки. Факты не меняй."
+  cfo_why_tag: cfo_priority
+  ceo_watch_tag: revenue
+presentation:
+  headline_linked: "Событие связано с профилем компании"
+  headline_unlinked: "Связь с профилем компании не подтверждена"
 roles:
   plan: critic
   interpret: interpret

@@ -1,15 +1,29 @@
-# Инструменты и критичные поля по механизмам.
+# Инструменты, критичные поля и тексты интерпретации по механизмам.
+# Новый механизм добавляется здесь (+ sensitivity.yaml / scoring.reasons) без правок Python.
+#
 # sensitivity_requires — объединение requires из sensitivity.yaml:
 # это известные признаки, без которых механизм не срабатывает.
 # critical_fields — поля из structurally_missing (alfa/config.yaml),
 # без которых уже сработавший механизм нельзя перевести из условной формулировки в прямую.
 # Ответ на такое поле меняет вывод, поэтому changes_conclusion совпадает с critical_fields.
-version: mechanisms-v1
+#
+# risk_template / opportunity_template / watch_template — клиентские последствия
+# (интерпретация, не extraction). Плейсхолдеры: {factor}, {reason}, {industry_label},
+# {debt_rate_type}, {fx_expense_share}, {fx_revenue_share}, {debt_amount}, {debt_maturity},
+# {event_type}. Уточнения по user_provided и event_type — в consequences.yaml.
+#
+# presentation — заголовки, фактор/эффект, feature_ref и теги ролей (без хардкода в interpret.py).
+version: mechanisms-v2
 
 questions:
   debt_rate_type:
     text: "Ставка по вашему кредиту плавающая или фиксированная?"
     why_asked: "От типа ставки зависит, меняется ли платёж при решении по ключевой ставке."
+    short_label: "типу ставки"
+    unknown_label: "неизвестен"
+    known_phrases:
+      floating: "плавающей ставки"
+      fixed: "фиксированной ставки"
     options:
       - {label: "плавающая", value: "floating"}
       - {label: "фиксированная", value: "fixed"}
@@ -17,6 +31,12 @@ questions:
   debt_amount:
     text: "Каков порядок суммы кредита?"
     why_asked: "Без суммы расчёт остаётся иллюстрацией на единицу, а не оценкой компании."
+    short_label: "сумме кредита"
+    unknown_label: "неизвестна"
+    value_labels:
+      small: "до 100 млн ₽"
+      mid: "100–500 млн ₽"
+      large: "больше 500 млн ₽"
     options:
       - {label: "до 100 млн ₽", value: "small"}
       - {label: "от 100 до 500 млн ₽", value: "mid"}
@@ -25,6 +45,11 @@ questions:
   debt_maturity:
     text: "Кредит скорее короткий или длинный?"
     why_asked: "Срок влияет на то, успеет ли ставка сказаться на платеже."
+    short_label: "сроку кредита"
+    unknown_label: "неизвестен"
+    value_labels:
+      short: "до года"
+      long: "дольше года"
     options:
       - {label: "до года", value: "short"}
       - {label: "дольше года", value: "long"}
@@ -32,6 +57,16 @@ questions:
   fx_expense_share:
     text: "Какая примерно доля расходов компании в иностранной валюте?"
     why_asked: "Без доли расходов влияние курса остаётся условным."
+    short_label: "доле валютных расходов"
+    unknown_label: "неизвестна"
+    known_phrases:
+      high: "высокой доли валютных расходов"
+      mid: "средней доли валютных расходов"
+      low: "низкой доли валютных расходов"
+    value_labels:
+      low: "низкая"
+      mid: "средняя"
+      high: "высокая"
     options:
       - {label: "до 10%", value: "low"}
       - {label: "от 10% до 30%", value: "mid"}
@@ -40,6 +75,16 @@ questions:
   fx_revenue_share:
     text: "Какая примерно доля выручки компании в иностранной валюте?"
     why_asked: "Без доли выручки валютный эффект нельзя перевести в масштаб компании."
+    short_label: "доле валютной выручки"
+    unknown_label: "неизвестна"
+    known_phrases:
+      high: "высокой доли валютной выручки"
+      mid: "средней доли валютной выручки"
+      low: "низкой доли валютной выручки"
+    value_labels:
+      low: "низкая"
+      mid: "средняя"
+      high: "высокая"
     options:
       - {label: "до 10%", value: "low"}
       - {label: "от 10% до 30%", value: "mid"}
@@ -53,6 +98,24 @@ mechanisms:
     critical_fields: [debt_rate_type]
     optional_fields: [debt_amount, debt_maturity]
     changes_conclusion: [debt_rate_type]
+    risk_template: "Если ставка по {factor} плавающая, изменение ключевой ставки меняет стоимость обслуживания долга ({reason})."
+    opportunity_template: "Пауза или снижение ставки может удержать или снизить стоимость обслуживания {factor}."
+    watch_template: "Смотреть тип ставки ({debt_rate_type}) и пересчёт платежа по {factor}."
+    presentation:
+      headline: "Долг: платёж зависит от типа ставки"
+      headlines:
+        - {when: {field: debt_rate_type, eq: floating}, text: "Плавающий долг: рост ставки поднимает платёж"}
+        - {when: {field: debt_rate_type, eq: fixed}, text: "Фиксированный долг: решение по ставке платёж не пересчитывает"}
+      factor: "кредитного и лизингового контура"
+      factor_parts:
+        - {feature: has_credit, eq: true, label: "кредита"}
+        - {feature: has_leasing, eq: true, label: "лизинга"}
+      effect: "меняется стоимость обслуживания долга"
+      feature_ref: has_credit
+      feature_ref_prefer:
+        - {feature: has_credit, eq: true, ref: has_credit}
+        - {feature: has_leasing, eq: true, ref: has_leasing}
+      tags: [cfo_priority]
     tools:
       - {tool: get_profile_view, args: {}}
       - {tool: search_alfa_analytics, args: {topic: key_rate}}
@@ -66,6 +129,14 @@ mechanisms:
     critical_fields: []
     optional_fields: []
     changes_conclusion: []
+    risk_template: "Снижение рыночных ставок может уменьшить доходность {factor} ({reason})."
+    opportunity_template: "Рост ставки может повысить доходность {factor}."
+    watch_template: "Смотреть переоценку доходности {factor} относительно ключевой ставки."
+    presentation:
+      headline: "Депозит: ставка влияет на доходность размещённых средств"
+      factor: "депозита"
+      effect: "меняется доходность размещённых средств"
+      feature_ref: has_deposit
     tools:
       - {tool: get_profile_view, args: {}}
       - {tool: search_alfa_analytics, args: {topic: key_rate}}
@@ -77,6 +148,18 @@ mechanisms:
     critical_fields: [fx_expense_share]
     optional_fields: [fx_revenue_share]
     changes_conclusion: [fx_expense_share]
+    risk_template: "Если доля валютных расходов ({fx_expense_share}) заметна, сдвиг курса усиливает затраты в {factor} ({reason})."
+    opportunity_template: "Благоприятное движение курса может снизить валютные затраты в {factor}."
+    watch_template: "Смотреть долю FX-расходов ({fx_expense_share}) и чувствительность {factor}."
+    presentation:
+      headline: "Валютный контур: курс меняет стоимость операций"
+      headlines:
+        - {when: {field: fx_expense_share, eq: high}, text: "Высокая валютная доля: курс сильнее бьёт по затратам"}
+        - {when: {field: fx_expense_share, eq: low}, text: "Низкая валютная доля: прямой удар курса ограничен"}
+      factor: "валютного контура"
+      effect: "меняется валютная стоимость операций"
+      feature_ref: fx_exposure
+      tags: [cfo_priority]
     tools:
       - {tool: get_profile_view, args: {}}
       - {tool: get_counterparties, args: {direction: both}}
@@ -90,6 +173,19 @@ mechanisms:
     critical_fields: [fx_expense_share]
     optional_fields: [fx_revenue_share]
     changes_conclusion: [fx_expense_share]
+    risk_template: "Ограничения внешней торговли могут затруднить поставки и расчёты в {factor} ({reason})."
+    opportunity_template: "Смягчение ограничений может облегчить операции в {factor}."
+    watch_template: "Смотреть страны ВЭД и долю валютных расходов ({fx_expense_share}) в {factor}."
+    presentation:
+      headline: "Внешняя торговля: ограничения бьют по ВЭД-контуру"
+      headlines:
+        - {when: {field: fx_expense_share, eq: high}, text: "Высокая валютная доля: курс сильнее бьёт по затратам"}
+        - {when: {field: fx_expense_share, eq: low}, text: "Низкая валютная доля: прямой удар курса ограничен"}
+      factor: "контура внешней торговли"
+      effect: "затрагивается контур ВЭД"
+      feature_ref: fts_countries
+      feature_ref_prefer:
+        - {feature: fx_exposure, eq: known, ref: fx_exposure}
     tools:
       - {tool: get_profile_view, args: {}}
       - {tool: get_counterparties, args: {direction: both}}
@@ -102,6 +198,15 @@ mechanisms:
     critical_fields: []
     optional_fields: []
     changes_conclusion: []
+    risk_template: "Давление на рынке труда может увеличить расходы компании через {factor} ({reason})."
+    opportunity_template: "Стабилизация рынка труда может удержать расходы через {factor}."
+    watch_template: "Смотреть динамику ФОТ и нагрузку на {factor}."
+    presentation:
+      headline: "Персонал: изменение на рынке труда поднимает расходы"
+      factor: "фонда оплаты труда"
+      effect: "меняются расходы на персонал"
+      feature_ref: has_payroll
+      tags: [cfo_priority]
     tools:
       - {tool: get_profile_view, args: {}}
       - {tool: search_alfa_analytics, args: {topic: labor}}
@@ -114,6 +219,18 @@ mechanisms:
     critical_fields: []
     optional_fields: []
     changes_conclusion: []
+    risk_template: "Сдвиг спроса может снизить выручку компании в {industry_label} через {factor} ({reason})."
+    opportunity_template: "Рост спроса может поддержать выручку компании в {industry_label}."
+    watch_template: "Смотреть продажи и спрос в {industry_label} относительно {factor}."
+    presentation:
+      headline: "Спрос: сдвиг затрагивает выручку в отрасли"
+      factor: "отраслевого спроса"
+      effect: "затрагивается выручка в отрасли"
+      feature_ref: industry_group
+      feature_ref_prefer:
+        - {feature: has_factoring, eq: true, ref: has_factoring}
+        - {feature: has_rko, eq: true, ref: has_rko}
+      tags: [revenue]
     tools:
       - {tool: get_profile_view, args: {}}
       - {tool: search_alfa_analytics, args: {topic: consumer_demand}}
@@ -126,6 +243,16 @@ mechanisms:
     critical_fields: []
     optional_fields: []
     changes_conclusion: []
+    risk_template: "Удорожание входящих ресурсов может поднять себестоимость через {factor} ({reason})."
+    opportunity_template: "Снижение цен на ресурсы может облегчить себестоимость через {factor}."
+    watch_template: "Смотреть цены входящих ресурсов и долю чувствительных затрат в {factor}."
+    presentation:
+      headline: "Себестоимость: входящие ресурсы дорожают"
+      factor: "входящих ресурсов в себестоимости"
+      effect: "меняется себестоимость"
+      feature_ref: industry_group
+      feature_ref_prefer:
+        - {feature: has_credit, eq: true, ref: has_credit}
     tools:
       - {tool: get_profile_view, args: {}}
       - {tool: get_counterparties, args: {direction: both}}
@@ -138,6 +265,15 @@ mechanisms:
     critical_fields: []
     optional_fields: []
     changes_conclusion: []
+    risk_template: "Падение цены сырья может снизить профильную выручку через {factor} в {industry_label} ({reason})."
+    opportunity_template: "Рост цены сырья может поддержать профильную выручку через {factor}."
+    watch_template: "Смотреть цену сырья и выручку профиля в {industry_label}."
+    presentation:
+      headline: "Сырьё: цена влияет на профильную выручку"
+      factor: "профильного сырьевого контура"
+      effect: "меняется профильная выручка"
+      feature_ref: industry_group
+      tags: [revenue]
     tools:
       - {tool: get_profile_view, args: {}}
       - {tool: search_alfa_analytics, args: {topic: commodities_gold}}
@@ -149,6 +285,14 @@ mechanisms:
     critical_fields: []
     optional_fields: []
     changes_conclusion: []
+    risk_template: "Изменение налоговых условий может увеличить нагрузку через {factor} ({reason})."
+    opportunity_template: "Смягчение налоговых условий может снизить нагрузку через {factor}."
+    watch_template: "Смотреть налоговые режимы и нагрузку на {factor}."
+    presentation:
+      headline: "Налоги: меняется нагрузка на компанию"
+      factor: "расчётного и налогового контура"
+      effect: "меняется налоговая нагрузка"
+      feature_ref: has_rko
     tools:
       - {tool: get_profile_view, args: {}}
       - {tool: search_alfa_analytics, args: {topic: taxes}}
@@ -160,6 +304,14 @@ mechanisms:
     critical_fields: []
     optional_fields: []
     changes_conclusion: []
+    risk_template: "Новые отраслевые правила могут увеличить стоимость деятельности через {factor} в {industry_label} ({reason})."
+    opportunity_template: "Отсрочка жёстких правил может удержать стоимость деятельности через {factor}."
+    watch_template: "Смотреть отраслевые правила и стоимость соответствия в {industry_label}."
+    presentation:
+      headline: "Регуляторика: растёт стоимость деятельности в отрасли"
+      factor: "отраслевых правил"
+      effect: "меняется стоимость деятельности"
+      feature_ref: industry_group
     tools:
       - {tool: get_profile_view, args: {}}
       - {tool: search_alfa_analytics, args: {topic: sector_regulation}}
@@ -171,6 +323,14 @@ mechanisms:
     critical_fields: []
     optional_fields: []
     changes_conclusion: []
+    risk_template: "Санкционный контур может повысить риск по {factor} ({reason})."
+    opportunity_template: "Прояснение санкционного контура может снизить неопределённость по {factor}."
+    watch_template: "Смотреть условия гарантий и расчётов в {factor}."
+    presentation:
+      headline: "Гарантии: растёт риск по расчётам"
+      factor: "гарантий и расчётов"
+      effect: "растёт риск по гарантиям и расчётам"
+      feature_ref: has_guarantees
     tools:
       - {tool: get_profile_view, args: {}}
       - {tool: get_counterparties, args: {direction: both}}

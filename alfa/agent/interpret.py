@@ -7,39 +7,31 @@ import re
 from typing import Any
 
 from alfa.agent.config import BANK_VIEW_TYPES, AgentConfig
-from alfa.agent.impact import assess_impact
+from alfa.agent.consequences import (
+    apply_company_consequences,
+    consequences_pack_section,
+)
+from alfa.agent.impact import assess_impact, missing_critical
+from alfa.agent.mechanism_text import (
+    calc_mechanism,
+    condition_phrase,
+    effect_clause,
+    factor_phrase,
+    feature_ref,
+    field_short_label,
+    headline_for,
+    mechanisms_with_tag,
+    prioritize,
+)
 from alfa.agent.security import redact_text, wrap_data
+from alfa.agent.state_view import features as state_features
+from alfa.agent.state_view import mechanism_ids as state_mechanism_ids
+from alfa.agent.state_view import user_provided as state_user_provided
+from alfa.core import textcheck
 
-_HEADLINES = {
-    "debt_service_cost": "Событие касается стоимости вашего долга",
-    "deposit_yield": "Событие касается доходности размещённых средств",
-    "fx_cost": "Событие касается валютной стоимости операций",
-    "import_restrictions": "Событие касается внешнего торгового контура",
-    "labor_cost": "Событие касается расходов на персонал",
-    "demand_shift": "Событие касается выручки в вашей отрасли",
-    "input_cost": "Событие касается себестоимости и входящих ресурсов",
-    "commodity_revenue": "Событие касается профильной выручки",
-    "tax_burden": "Событие касается налоговой нагрузки на компанию",
-    "regulatory_cost": "Событие касается стоимости деятельности в отрасли",
-    "guarantee_risk": "Событие касается гарантий и расчётов",
-}
-_CONDITIONAL = {
-    "debt_rate_type": "Тип ставки в данных банка неизвестен: если ставка плавающая, платёж может измениться, если фиксированная — нет.",
-    "fx_expense_share": "Доля валютных расходов в данных банка неизвестна: если она заметна, курс сильнее отражается на затратах.",
-    "fx_revenue_share": "Доля валютной выручки в данных банка неизвестна.",
-    "debt_amount": "Сумма кредита в данных банка неизвестна.",
-    "debt_maturity": "Срок кредита в данных банка неизвестен.",
-}
-_ROLE = {
-    "default": "Порядок блоков: что произошло, почему это важно компании, на что смотреть.",
-    "cfo": "В блоке «почему важно» сначала стоимость денег и расходы. Факты и вывод не меняй.",
-    "ceo": "В блоке «на что смотреть» сначала устойчивость выручки. Факты и вывод не меняй.",
-}
 _CLOSED = {"revenue", "region", "fts_countries", "workers_class", "known_counterparty_volume_share", "fx_confidence"}
 _PARTY = re.compile(r"\bпоставщик\w*\b|\bпокупател(?:ь|я|и|ем)\b", re.IGNORECASE)
 TAIL_MARK = " [хвост удалён]"
-_CFO_FIRST = ("debt_service_cost", "fx_cost", "labor_cost")
-_REVENUE_MECHANISMS = {"demand_shift", "commodity_revenue"}
 
 
 def _pick_alfa_card(cards: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -49,100 +41,107 @@ def _pick_alfa_card(cards: list[dict[str, Any]]) -> dict[str, Any] | None:
     return (preferred or cards)[0]
 
 
-def _features(state: dict) -> dict[str, Any]:
-    return ((state.get("views") or {}).get("profile") or {}).get("features") or {}
+def _headline_for(state: dict, config: AgentConfig) -> str:
+    mechanisms = state_mechanism_ids(state)
+    unlinked = str((config.presentation or {}).get("headline_unlinked") or "Связь с профилем компании не подтверждена")
+    if not mechanisms:
+        return unlinked
+    return headline_for(str(mechanisms[0]), state_user_provided(state), config)
 
 
-def _user(state: dict) -> dict[str, str]:
-    return {str(item["field"]): str(item["value"]) for item in state.get("user_provided") or []}
+def _impact_rationale_text(impact: dict[str, Any], state: dict, config: AgentConfig) -> str:
+    parts = [str(impact.get("definition") or "").strip()]
+    reasons = state.get("reasons") or {}
+    mechanisms = list(state.get("mechanism_ids") or [])
+    features = state_features(state)
+    factors: list[str] = []
+    for mechanism_id in mechanisms[:3]:
+        clause = effect_clause(mechanism_id, reasons, config)
+        factors.append(f"{factor_phrase(mechanism_id, features, config)} — {clause}")
+    cards = ((state.get("evidence") or {}).get("cards") or [])
+    if cards:
+        factors.append("есть карточка Альфа-Банка по теме")
+    if state.get("calc_results"):
+        factors.append("есть расчёт чувствительности")
+    if factors:
+        parts.append("Ключевые факторы: " + "; ".join(factors) + ".")
+    gaps = list(impact.get("missing_critical") or [])
+    if gaps:
+        labels = [field_short_label(name, config) for name in gaps[:3]]
+        parts.append("Не хватает данных по " + ", ".join(labels) + ", поэтому масштаб условный.")
+    elif mechanisms:
+        parts.append("Критичные поля для прямого вывода заполнены или не требуются.")
+    return " ".join(part for part in parts if part)
 
 
-def feature_ref(mechanism_id: str, features: dict[str, Any]) -> str:
-    if mechanism_id == "debt_service_cost":
-        if features.get("has_credit") is True:
-            return "has_credit"
-        if features.get("has_leasing") is True:
-            return "has_leasing"
-        return "has_credit"
-    if mechanism_id == "import_restrictions":
-        if features.get("fx_exposure") == "known":
-            return "fx_exposure"
-        return "fts_countries"
-    if mechanism_id == "demand_shift":
-        if features.get("has_factoring") is True:
-            return "has_factoring"
-        if features.get("has_rko") is True:
-            return "has_rko"
-        return "industry_group"
-    if mechanism_id == "input_cost" and features.get("has_credit") is True:
-        return "has_credit"
-    return {
-        "deposit_yield": "has_deposit",
-        "fx_cost": "fx_exposure",
-        "labor_cost": "has_payroll",
-        "commodity_revenue": "industry_group",
-        "tax_burden": "has_rko",
-        "regulatory_cost": "industry_group",
-        "guarantee_risk": "has_guarantees",
-        "input_cost": "industry_group",
-        "demand_shift": "industry_group",
-    }.get(mechanism_id, "industry_group")
-
-
-def _profile_sentence(mechanism_id: str, features: dict[str, Any]) -> str:
-    if mechanism_id == "debt_service_cost":
-        parts = []
-        if features.get("has_credit") is True:
-            parts.append("кредит")
-        if features.get("has_leasing") is True:
-            parts.append("лизинг")
-        if parts:
-            return "В профиле есть " + " и ".join(parts) + "."
-        return "В профиле есть признак долгового контура."
-    if mechanism_id == "deposit_yield":
-        return "В профиле есть депозит."
-    if mechanism_id == "fx_cost":
-        return "Валютный контур в профиле отмечен."
-    if mechanism_id == "import_restrictions":
-        return "В профиле отмечен контур внешней торговли."
-    if mechanism_id == "labor_cost":
-        return "В профиле есть фонд оплаты труда."
-    if mechanism_id == "tax_burden":
-        return "В профиле есть расчётный контур."
-    if mechanism_id == "guarantee_risk":
-        return "В профиле есть гарантии."
-    if mechanism_id == "commodity_revenue":
-        return "Отрасль компании относится к профильному сырью."
-    if mechanism_id == "demand_shift":
-        return "Отрасль компании связана со спросом."
-    if mechanism_id == "regulatory_cost":
-        return "Отрасль компании попадает под отраслевые правила."
-    return "Себестоимость компании связана с входящими ресурсами."
-
-
-def _user_sentence(field_name: str, value: str) -> str:
-    if field_name == "debt_rate_type" and value == "floating":
-        return "По данным, которые вы указали и банк не проверял, ставка плавающая, поэтому платёж может измениться вместе с ключевой ставкой."
-    if field_name == "debt_rate_type" and value == "fixed":
-        return "По данным, которые вы указали и банк не проверял, ставка фиксированная, поэтому само решение по ключевой ставке платёж не пересчитывает."
-    if field_name in {"fx_expense_share", "fx_revenue_share"}:
-        return "По данным, которые вы указали и банк не проверял, валютная доля относится к выбранному диапазону."
-    return "По данным, которые вы указали и банк не проверял, уточнение учтено в условном выводе."
-
-
-def _tail(mechanism_id: str, state: dict, config: AgentConfig) -> str:
-    spec = config.mechanisms.get(mechanism_id)
-    if spec is None or not spec.critical_fields:
-        return ""
-    provided = _user(state)
-    parts = []
-    for field_name in spec.critical_fields:
-        value = provided.get(field_name)
-        if value and value != "unknown":
-            parts.append(_user_sentence(field_name, value))
-        else:
-            parts.append(_CONDITIONAL.get(field_name, "Критичное поле в данных банка неизвестно."))
-    return " ".join(parts)
+def _model_why_claims(
+    state: dict, config: AgentConfig, features: dict[str, Any]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    mechanisms = list(state.get("mechanism_ids") or [])
+    reasons = state.get("reasons") or {}
+    if not mechanisms:
+        return [], []
+    claims: list[dict[str, Any]] = []
+    why_ids: list[str] = []
+    primary = mechanisms[0]
+    partners = mechanisms[:2]
+    factors = " и ".join(factor_phrase(item, features, config) for item in partners)
+    effects = " и ".join(effect_clause(item, reasons, config) for item in partners)
+    condition = condition_phrase(state, config, partners)
+    lead = f"Из-за {factors}"
+    if condition:
+        lead += f" {condition}"
+    lead += f" {effects}."
+    lead = lead[0].upper() + lead[1:] if lead else lead
+    claim_id = f"c_model_{primary}"
+    claims.append(
+        {
+            "id": claim_id,
+            "layer": "model",
+            "text": lead,
+            "refs": [],
+            "feature_refs": [feature_ref(primary, features, config)],
+            "mechanism_id": primary,
+        }
+    )
+    why_ids.append(claim_id)
+    if len(mechanisms) >= 2:
+        second = mechanisms[1]
+        second_text = (
+            f"Отдельно из-за {factor_phrase(second, features, config)} "
+            f"{effect_clause(second, reasons, config)}."
+        )
+        second_text = second_text[0].upper() + second_text[1:]
+        second_id = f"c_model_{second}"
+        claims.append(
+            {
+                "id": second_id,
+                "layer": "model",
+                "text": second_text,
+                "refs": [],
+                "feature_refs": [feature_ref(second, features, config)],
+                "mechanism_id": second,
+            }
+        )
+        why_ids.append(second_id)
+    covered = {primary} | ({mechanisms[1]} if len(mechanisms) >= 2 else set())
+    for mechanism_id in mechanisms:
+        if mechanism_id in covered:
+            continue
+        claims.append(
+            {
+                "id": f"c_model_{mechanism_id}",
+                "layer": "model",
+                "text": (
+                    f"Также через {factor_phrase(mechanism_id, features, config)} "
+                    f"{effect_clause(mechanism_id, reasons, config)}."
+                ),
+                "refs": [],
+                "feature_refs": [feature_ref(mechanism_id, features, config)],
+                "mechanism_id": mechanism_id,
+            }
+        )
+    return claims, why_ids
 
 
 def _closed_ok(config: AgentConfig) -> bool:
@@ -182,13 +181,111 @@ def _primary_fact_refs(facts: list[dict[str, Any]]) -> list[str]:
     return refs or ["fact:f1"]
 
 
+_THEME_CUES = ("ставк", "курс", "золот", "ключ", "нефть", "тариф", "налог")
+
+
+def _theme_tokens(text: str) -> set[str]:
+    lowered = (text or "").lower()
+    return {cue for cue in _THEME_CUES if cue in lowered}
+
+
+def _pack_factor_lines(state: dict, config: AgentConfig, features: dict[str, Any]) -> list[str]:
+    reasons = state.get("reasons") or {}
+    provided = state_user_provided(state)
+    lines: list[str] = []
+    for mechanism_id in state_mechanism_ids(state):
+        feat = feature_ref(mechanism_id, features, config)
+        reason = str(reasons.get(mechanism_id) or mechanism_id).strip()
+        spec = config.mechanisms.get(mechanism_id)
+        gaps: list[str] = []
+        if spec is not None:
+            for field_name in spec.critical_fields:
+                value = provided.get(field_name)
+                if value is None or value == "" or value == "unknown":
+                    gaps.append(field_name)
+        gap_text = ",".join(gaps) if gaps else "—"
+        lines.append(f"- {mechanism_id}; feature={feat}; reason={reason}; missing_critical={gap_text}")
+    if not lines:
+        gaps = missing_critical(state, config)
+        gap_text = ",".join(gaps) if gaps else "—"
+        lines.append(f"- нет сработавших механизмов; missing_critical={gap_text}")
+    return lines
+
+
+def _pack_news_consequences(event: dict[str, Any]) -> str:
+    risks = [str(item).strip() for item in (event.get("risks") or []) if str(item).strip()]
+    opps = [str(item).strip() for item in (event.get("opportunities") or []) if str(item).strip()]
+    risk_line = "; ".join(wrap_data(item) for item in risks[:3]) if risks else "не названы"
+    opp_line = "; ".join(wrap_data(item) for item in opps[:3]) if opps else "не названы"
+    return (
+        "Уже известные риски/возможности из новости (evidence, не готовый ответ клиенту):\n"
+        f"риски: {risk_line}\n"
+        f"возможности: {opp_line}\n"
+        "Нужно интерпретировать для клиента через признаки/механизмы, а не копировать."
+    )
+
+
+def _pack_ban(event: dict[str, Any]) -> str:
+    title = str(event.get("title") or "").strip()
+    summary = str(event.get("summary") or "").strip()
+    lines = [
+        "Запрет: не копировать title/summary в model-claims без нового смысла "
+        "(связка событие → признак/механизм → следствие для компании)."
+    ]
+    if title:
+        lines.append(f"title: {wrap_data(clip_text(title, 120))}")
+    if summary:
+        lines.append(f"summary: {wrap_data(clip_text(summary, 160))}")
+    return "\n".join(lines)
+
+
+def _pack_competing_signals(evidence: dict[str, Any]) -> list[str]:
+    """До 2 конкурирующих сигналов: echo disagreement и банк vs новость."""
+    signals: list[str] = []
+    event = evidence.get("event") or {}
+    for item in (event.get("echo_disagreements") or [])[:2]:
+        primary = ",".join(str(num) for num in (item.get("primary_numbers") or []))
+        echo = ",".join(str(num) for num in (item.get("echo_numbers") or []))
+        publisher = item.get("echo_publisher") or "echo"
+        signals.append(
+            f"- echo disagreement: fact:{item.get('primary_id')} nums=[{primary}] "
+            f"vs {publisher} nums=[{echo}]"
+        )
+        if len(signals) >= 2:
+            return signals
+    facts = list(event.get("facts") or [])
+    for card in evidence.get("cards") or []:
+        card_text = str(card.get("claim") or "")
+        card_nums = textcheck.numbers_in(card_text)
+        card_themes = _theme_tokens(card_text)
+        if not card_nums or not card_themes:
+            continue
+        for fact in facts:
+            fact_text = str(fact.get("claim") or "")
+            fact_nums = textcheck.numbers_in(fact_text)
+            if not fact_nums or fact_nums == card_nums:
+                continue
+            if not (card_themes & _theme_tokens(fact_text)):
+                continue
+            signals.append(
+                f"- банк vs новость: card:{card.get('card_id')} nums=[{','.join(sorted(card_nums))}] "
+                f"vs fact:{fact.get('id') or 'f1'} nums=[{','.join(sorted(fact_nums))}]"
+            )
+            break
+        if len(signals) >= 2:
+            break
+    return signals[:2]
+
+
 def build_context_pack(state: dict, config: AgentConfig) -> str:
     evidence = state.get("evidence") or {}
+    event = evidence.get("event") or {}
     budget = config.context_tokens * config.chars_per_token
-    features = _public_features(_features(state), config)
+    raw_features = state_features(state)
+    features = _public_features(raw_features, config)
     synthetic = not _closed_ok(config)
     fact_lines = []
-    for fact in (evidence.get("event") or {}).get("facts") or []:
+    for fact in event.get("facts") or []:
         claim = wrap_data(str(fact.get("claim") or ""))
         span = str(fact.get("evidence_span") or "")
         locator = []
@@ -205,12 +302,20 @@ def build_context_pack(state: dict, config: AgentConfig) -> str:
         if locator:
             line += f"\n  loc: {'; '.join(locator)}"
         fact_lines.append(line)
-    mechanisms = ", ".join(state.get("mechanism_ids") or []) or "нет"
     profile_note = "Профиль синтетический: суммы и идентификаторы сняты." if synthetic else "Признаки компании."
+    factor_body = "\n".join(_pack_factor_lines(state, config, raw_features))
     sections = [
         "Факты события:\n" + ("\n".join(fact_lines) or "нет"),
-        f"Механизмы: {mechanisms}. {profile_note} Признаки: {features}.",
+        f"{profile_note} Признаки: {features}.",
+        "Факторы для интерпретации:\n" + factor_body,
+        _pack_news_consequences(event),
+        _pack_ban(event),
     ]
+    competing = _pack_competing_signals(evidence)
+    if competing:
+        sections.append(
+            "Конкурирующие сигналы (риски vs возможности, не усреднять):\n" + "\n".join(competing)
+        )
     cards = []
     for card in evidence.get("cards") or []:
         page = card.get("page")
@@ -249,6 +354,7 @@ def build_context_pack(state: dict, config: AgentConfig) -> str:
     if graph:
         reliability = graph.get("reliability", "none") if isinstance(graph, dict) else "none"
         sections.append(f"Платёжное окружение, reliability={reliability}: {graph}")
+    sections.append(consequences_pack_section(state, config))
     share = max(1, budget // len(sections))
     body = [clip_text(section, share) for section in sections]
     text, _hits = redact_text("\n\n".join(body))
@@ -256,7 +362,7 @@ def build_context_pack(state: dict, config: AgentConfig) -> str:
 
 
 def template_draft(state: dict, config: AgentConfig) -> dict[str, Any]:
-    features = _features(state)
+    features = state_features(state)
     evidence = state.get("evidence") or {}
     event = evidence.get("event") or {}
     facts = [item for item in (event.get("facts") or []) if str(item.get("claim") or "").strip()]
@@ -315,38 +421,27 @@ def template_draft(state: dict, config: AgentConfig) -> dict[str, Any]:
                 "refs": [str(card["card_id"])],
             }
         )
-    reasons = state.get("reasons") or {}
-    for mechanism_id in state.get("mechanism_ids") or []:
-        sentence = _profile_sentence(mechanism_id, features)
-        reason = reasons.get(mechanism_id) or mechanism_id
-        tail = _tail(mechanism_id, state, config)
-        text = " ".join(part for part in (sentence, reason + ".", tail) if part)
-        claims.append(
-            {
-                "id": f"c_model_{mechanism_id}",
-                "layer": "model",
-                "text": text,
-                "refs": [],
-                "feature_refs": [feature_ref(mechanism_id, features)],
-                "mechanism_id": mechanism_id,
-            }
-        )
+    model_claims, why_model_ids = _model_why_claims(state, config, features)
+    claims.extend(model_claims)
     extra_sources = {}
+    calc_why_ids: list[str] = []
     for item in state.get("calc_results") or []:
-        mechanism_id = _calc_mechanism(item.get("fn"), state)
+        mechanism_id = calc_mechanism(item.get("fn"), state, config)
         if mechanism_id is None:
             continue
+        calc_id = f"c_{item['calc_id'].replace(':', '_')}"
         claims.append(
             {
-                "id": f"c_{item['calc_id'].replace(':', '_')}",
+                "id": calc_id,
                 "layer": "model",
                 "text": item["text"],
                 "refs": [],
-                "feature_refs": [feature_ref(mechanism_id, features)],
+                "feature_refs": [feature_ref(mechanism_id, features, config)],
                 "mechanism_id": mechanism_id,
                 "calc_refs": [item["calc_id"]],
             }
         )
+        calc_why_ids.append(calc_id)
         extra_sources[item["calc_id"]] = item["text"]
     hypotheses = ((state.get("views") or {}).get("explanation") or state.get("explanation") or {}).get("hypotheses") or []
     if hypotheses and not _unsafe(str(hypotheses[0].get("text") or "")):
@@ -373,13 +468,7 @@ def template_draft(state: dict, config: AgentConfig) -> dict[str, Any]:
                 "confidence": 0.35,
             }
         )
-    event_risks = [str(item).strip() for item in (event.get("risks") or []) if str(item).strip()]
-    event_opportunities = [str(item).strip() for item in (event.get("opportunities") or []) if str(item).strip()]
     assumptions = []
-    if not event_risks:
-        assumptions.append("Отдельные риски в тексте события не названы.")
-    if not event_opportunities:
-        assumptions.append("Отдельные возможности в тексте события не названы.")
     if impact["missing_critical"]:
         assumptions.append("Критичное поле в данных банка не заполнено, поэтому формулировка условная.")
     if not cards:
@@ -388,7 +477,9 @@ def template_draft(state: dict, config: AgentConfig) -> dict[str, Any]:
         assumptions.append("Есть устаревшая карточка аналитики, она помечена.")
     if any(item.get("illustrative") for item in state.get("calc_results") or []):
         assumptions.append("Количественная оценка иллюстративная и не относится к сумме по компании.")
-    headline = _HEADLINES.get((state.get("mechanism_ids") or [""])[0], "Событие связано с профилем компании")
+    headline = _headline_for(state, config)
+    linked = str((config.presentation or {}).get("headline_linked") or "Событие связано с профилем компании")
+    unlinked = str((config.presentation or {}).get("headline_unlinked") or "Связь с профилем компании не подтверждена")
     if not state.get("mechanism_ids"):
         summary = str(((state.get("views") or {}).get("explanation") or state.get("explanation") or {}).get("summary") or "").strip()
         if summary:
@@ -401,7 +492,8 @@ def template_draft(state: dict, config: AgentConfig) -> dict[str, Any]:
                     "feature_refs": ["industry_group"],
                 }
             )
-            headline = "Событие связано с профилем компании"
+            why_model_ids = ["c_model_profile"]
+            headline = linked
         else:
             claims.append(
                 {
@@ -412,78 +504,58 @@ def template_draft(state: dict, config: AgentConfig) -> dict[str, Any]:
                     "feature_refs": ["industry_group"],
                 }
             )
-            headline = "Связь с профилем компании не подтверждена"
+            why_model_ids = ["c_model_none"]
+            headline = unlinked
     by_layer = lambda layer: [item["id"] for item in claims if item["layer"] == layer]
-    why = by_layer("model") + by_layer("alfa")
+    why = list(why_model_ids) + calc_why_ids + by_layer("alfa")
+    seen_why: set[str] = set()
+    why = [claim_id for claim_id in why if not (claim_id in seen_why or seen_why.add(claim_id))]
     watch = by_layer("hypothesis")
     role = str(state.get("role") or "")
+    role_cfg = config.role_presentation or {}
+    by_id = {item["id"]: item for item in claims}
     if role == "cfo":
-        why = _prioritize_mechanisms(claims, why, _CFO_FIRST)
+        tag = str(role_cfg.get("cfo_why_tag") or "cfo_priority")
+        rank_map = {name: index for index, name in enumerate(mechanisms_with_tag(config, tag))}
+        why = prioritize(
+            why,
+            lambda claim_id: (by_id.get(claim_id) or {}).get("mechanism_id") in rank_map,
+            rank=lambda claim_id: rank_map.get(
+                str((by_id.get(claim_id) or {}).get("mechanism_id") or ""),
+                len(rank_map),
+            ),
+        )
     elif role == "ceo":
-        watch = _revenue_first(claims, watch)
-    return {
+        tag = str(role_cfg.get("ceo_watch_tag") or "revenue")
+        tagged = set(mechanisms_with_tag(config, tag))
+        watch = prioritize(
+            watch,
+            lambda claim_id: (
+                str((by_id.get(claim_id) or {}).get("mechanism_id") or "") in tagged
+                or "выруч" in str((by_id.get(claim_id) or {}).get("text") or "").lower()
+            ),
+        )
+    draft = {
         "claims": claims,
         "headline": headline,
         "what_happened": by_layer("fact"),
         "why_it_matters": why,
         "what_to_watch": watch,
-        "impact_rationale": impact["rationale"],
+        "impact_rationale": _impact_rationale_text(impact, state, config),
         "impact_level": impact["level"],
         "impact_definition": impact["definition"],
         "impact_score": impact["score"],
-        "scenarios": [
-            {
-                "name": "условный масштаб",
-                "logic": "Если недостающие данные появятся, масштаб эффекта станет конкретнее.",
-                "plausibility": "medium",
-                "support_refs": list(fact_refs[:1]),
-            }
-        ],
+        "scenarios": [],
         "assumptions": assumptions,
-        "risks": event_risks,
-        "opportunities": event_opportunities,
+        "risks": [],
+        "opportunities": [],
         "bank_block_ids": by_layer("alfa"),
         "disclaimer": config.disclaimer,
         "diverges_from_bank_view": False,
         "confidence": 0.42 if impact["missing_critical"] else 0.62,
         "extra_sources": extra_sources,
     }
-
-
-def _calc_mechanism(fn: str | None, state: dict) -> str | None:
-    mapping = {
-        "rate_sensitivity": "debt_service_cost",
-        "fx_sensitivity": "fx_cost",
-        "payroll_cost_change": "labor_cost",
-    }
-    mechanism_id = mapping.get(fn or "")
-    if mechanism_id in (state.get("mechanism_ids") or []):
-        return mechanism_id
-    return None
-
-
-def _prioritize_mechanisms(claims: list[dict[str, Any]], ids: list[str], order: tuple[str, ...]) -> list[str]:
-    by_id = {item["id"]: item for item in claims}
-    head: list[str] = []
-    for mechanism_id in order:
-        for claim_id in ids:
-            claim = by_id.get(claim_id) or {}
-            if claim.get("mechanism_id") == mechanism_id and claim_id not in head:
-                head.append(claim_id)
-    return head + [claim_id for claim_id in ids if claim_id not in head]
-
-
-def _revenue_first(claims: list[dict[str, Any]], ids: list[str]) -> list[str]:
-    by_id = {item["id"]: item for item in claims}
-
-    def is_revenue(claim_id: str) -> bool:
-        claim = by_id.get(claim_id) or {}
-        text = str(claim.get("text") or "").lower()
-        mechanism = str(claim.get("mechanism_id") or "")
-        return mechanism in _REVENUE_MECHANISMS or "выруч" in text
-
-    head = [claim_id for claim_id in ids if is_revenue(claim_id)]
-    return head + [claim_id for claim_id in ids if claim_id not in head]
+    return apply_company_consequences(draft, state, config)
 
 
 def _unsafe(text: str) -> bool:

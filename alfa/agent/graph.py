@@ -37,7 +37,9 @@ from pydantic import ValidationError
 from alfa.agent.config import OPTIONAL_TOOL_NAMES
 from alfa.agent.contract import assemble_insight
 from alfa.agent.impact import assess_impact
+from alfa.agent.consequences import apply_company_consequences
 from alfa.agent.interpret import build_context_pack, clip_text, llm_failure_kind, template_draft
+from alfa.agent.mechanism_text import role_hint
 from alfa.agent.models import DraftRegistry, PlanDraft, RepairDraft
 from alfa.agent.planner import (
     apply_replan_additions,
@@ -826,7 +828,7 @@ def build_graph(runtime):
             role=config.roles.get("interpret", "interpret"),
             model="",
             messages=[
-                {"role": "system", "content": prompt + "\n" + _role_hint(local.get("role"))},
+                {"role": "system", "content": prompt + "\n" + role_hint(local.get("role"), config)},
                 {"role": "user", "content": pack},
             ],
             response_schema=DraftRegistry,
@@ -1224,14 +1226,6 @@ def _parsed_dict(result) -> dict | None:
     return proposed if isinstance(proposed, dict) else None
 
 
-def _role_hint(role: str | None) -> str:
-    if role == "cfo":
-        return "В «почему важно» сначала стоимость денег. Факты не меняй."
-    if role == "ceo":
-        return "В «на что смотреть» сначала устойчивость выручки. Факты не меняй."
-    return "Порядок: что произошло, почему важно, на что смотреть."
-
-
 def _draft_from_parsed(parsed: Any, state: dict, config) -> dict:
     if isinstance(parsed, str):
         raise ValueError("textual parsed")
@@ -1255,4 +1249,5 @@ def _draft_from_parsed(parsed: Any, state: dict, config) -> dict:
     data["confidence"] = float(data.get("confidence") or 0.5)
     data.setdefault("scenarios", [])
     data.setdefault("assumptions", [])
-    return data
+    # LLM мог оставить пустые risks/opportunities/scenarios — добираем клиентский слой кодом.
+    return apply_company_consequences(data, state, config)

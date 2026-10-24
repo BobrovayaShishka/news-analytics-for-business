@@ -1,0 +1,197 @@
+# Клиентские последствия: уточнения к шаблонам mechanisms.yaml.
+# Extraction risks/opportunities из новости — только grounded span (evidence),
+# не единственный источник ответа клиенту. Интерпретация — отдельный слой.
+#
+# Приоритет шаблона risk/opportunity/watch (выше = специфичнее):
+#   1) by_field[field][value][mechanism]
+#   2) event_matrix[event_type][mechanism]
+#   3) defaults из mechanisms.yaml
+#
+# Сценарии: scenario_matrix[field][value] → список {name, logic, plausibility, use_calc?}.
+# Ключ unknown — пустое / unknown / нет точного совпадения. В коде — только fallback
+# «базовый / негативный / условный» по механизмам, без хардкода веток поля.
+#
+# Плейсхолдеры те же: {factor}, {reason}, {industry_label}, {debt_rate_type},
+# {fx_expense_share}, {fx_revenue_share}, {debt_amount}, {debt_maturity}, {event_type}.
+version: consequences-v1
+
+scenario_matrix:
+  debt_rate_type:
+    floating:
+      - name: базовый
+        logic: "Рост ключевой ставки поднимает платёж по долгу компании при плавающей ставке."
+        plausibility: high
+        use_calc: true
+      - name: негативный
+        logic: "Крупный шаг по ключу сильнее поднимает платёж; масштаб опирается на calc при наличии."
+        plausibility: medium
+        use_calc: true
+      - name: условный
+        logic: "Если бы ставка была фиксированной, решение по ключу платёж не пересчитало бы."
+        plausibility: low
+    fixed:
+      - name: базовый
+        logic: "Решение по ключевой ставке само по себе платёж не пересчитывает."
+        plausibility: high
+      - name: негативный
+        logic: "Давление ставки остаётся на рефинансировании и новых договорах."
+        plausibility: medium
+      - name: условный
+        logic: "При плавающей ставке тот же шаг по ключу поднял бы платёж."
+        plausibility: low
+        use_calc: true
+    unknown:
+      - name: плавающая ставка
+        logic: "Если ставка плавающая, рост ключа поднимает платёж компании."
+        plausibility: medium
+        use_calc: true
+      - name: фиксированная ставка
+        logic: "Если ставка фиксированная, решение по ключу платёж не пересчитывает."
+        plausibility: medium
+  fx_expense_share:
+    high:
+      - name: базовый
+        logic: "Курс сильнее отражается на затратах компании при высокой FX-доле."
+        plausibility: high
+      - name: негативный
+        logic: "Неблагоприятный курс при высокой доле сильнее бьёт по затратам."
+        plausibility: medium
+        use_calc: true
+      - name: условный
+        logic: "При низкой доле прямой удар курса по затратам слабее."
+        plausibility: low
+    low:
+      - name: базовый
+        logic: "Прямой удар курса по затратам компании ограничен."
+        plausibility: high
+      - name: негативный
+        logic: "При росте FX-доли курс сильнее бьёт по затратам."
+        plausibility: low
+      - name: условный
+        logic: "Нейтральный эффект при текущих признаках по прямому FX-контуру при низкой доле расходов."
+        plausibility: medium
+    unknown:
+      - name: базовый
+        logic: "Если доля FX mid/high, курс сильнее бьёт по затратам."
+        plausibility: medium
+      - name: негативный
+        logic: "Если валютная доля расходов заметна, неблагоприятный курс усиливает затраты."
+        plausibility: medium
+        use_calc: true
+      - name: условный
+        logic: "Если валютная доля расходов мала, прямой удар курса ограничен."
+        plausibility: medium
+
+by_field:
+  debt_rate_type:
+    floating:
+      debt_service_cost:
+        risk_template: "Плавающая ставка: рост ключевой ставки поднимает платёж по {factor}."
+        opportunity_template: "Плавающий долг: пауза или снижение ставки может удержать или снизить платёж по {factor}."
+        watch_template: "Следить за шагом ключевой ставки и пересчётом платежа по {factor}."
+    fixed:
+      debt_service_cost:
+        risk_template: "Нейтральный эффект по прямому платежу при фиксированной ставке; рефинансирование и новые договоры по {factor} остаются под давлением ставки."
+        opportunity_template: "Фиксированная ставка защищает текущий платёж по {factor} от решения по ключу."
+        watch_template: "Следить за рефинансированием и условиями новых договоров по {factor}."
+  fx_expense_share:
+    high:
+      fx_cost:
+        risk_template: "Высокая доля валютных расходов: движение курса сильнее бьёт по затратам в {factor}."
+        opportunity_template: "При благоприятном курсе высокая FX-доля быстрее снижает затраты в {factor}."
+        watch_template: "Следить за курсом и высокой долей FX-расходов в {factor}."
+      import_restrictions:
+        risk_template: "Высокая валютная доля расходов усиливает удар ограничений по {factor}."
+        opportunity_template: "Смягчение ограничений при высокой FX-доле заметнее облегчает {factor}."
+        watch_template: "Следить за ВЭД-ограничениями при высокой FX-доле в {factor}."
+    mid:
+      fx_cost:
+        risk_template: "При доле FX mid курс умеренно усиливает валютную стоимость операций в {factor}."
+        opportunity_template: "При благоприятном курсе средняя FX-доля умеренно снижает затраты в {factor}."
+        watch_template: "Следить за курсом при средней FX-доле расходов в {factor}."
+      import_restrictions:
+        risk_template: "При доле FX mid ограничения умеренно давят на {factor}."
+        opportunity_template: "Смягчение ограничений при средней FX-доле умеренно облегчает {factor}."
+        watch_template: "Следить за ВЭД-ограничениями при средней FX-доле в {factor}."
+    low:
+      fx_cost:
+        risk_template: "Нейтральный эффект: низкая доля валютных расходов ограничивает прямой удар курса по {factor}, но контур всё ещё чувствителен."
+        opportunity_template: "Низкая валютная доля расходов сдерживает рост затрат при движении курса в {factor}."
+        watch_template: "Следить, не растёт ли FX-доля расходов в {factor}."
+      import_restrictions:
+        risk_template: "Низкая FX-доля сдерживает прямой удар ограничений по затратам в {factor}, но срывы поставок остаются риском."
+        opportunity_template: "Низкая FX-доля ограничивает валютный удар; смягчение ограничений всё равно облегчает {factor}."
+        watch_template: "Следить за срывами поставок в {factor} даже при низкой FX-доле."
+
+event_matrix:
+  key_rate:
+    debt_service_cost:
+      risk_template: "Решение по ключевой ставке может изменить стоимость обслуживания {factor} ({reason})."
+      opportunity_template: "Пауза или снижение ключа может удержать или снизить стоимость обслуживания {factor}."
+      watch_template: "Смотреть решение по ключу и тип ставки ({debt_rate_type}) по {factor}."
+    deposit_yield:
+      risk_template: "Снижение ключа может уменьшить доходность {factor}."
+      opportunity_template: "Рост или удержание ключа может поддержать доходность {factor}."
+      watch_template: "Смотреть переоценку {factor} после решения по ключевой ставке."
+  fx:
+    fx_cost:
+      risk_template: "Движение курса рубля может изменить валютную стоимость операций в {factor} ({reason})."
+      opportunity_template: "Благоприятный курс может снизить затраты в {factor}."
+      watch_template: "Смотреть курс и долю FX-расходов ({fx_expense_share}) в {factor}."
+  sanctions_trade:
+    import_restrictions:
+      risk_template: "Санкции и ограничения ВЭД могут затруднить поставки и расчёты в {factor}."
+      opportunity_template: "Смягчение санкционного контура может облегчить операции в {factor}."
+      watch_template: "Смотреть список ограничений и страны ВЭД для {factor}."
+    guarantee_risk:
+      risk_template: "Санкционный контур повышает риск по {factor}."
+      opportunity_template: "Прояснение санкционного контура снижает неопределённость по {factor}."
+      watch_template: "Смотреть условия гарантий и расчётов в {factor}."
+  inflation:
+    input_cost:
+      risk_template: "Инфляционное давление может поднять себестоимость через {factor}."
+      opportunity_template: "Замедление инфляции может облегчить давление на {factor}."
+      watch_template: "Смотреть цены входящих ресурсов и инфляционный фон для {factor}."
+    deposit_yield:
+      risk_template: "Инфляция может обесценить реальную доходность {factor}."
+      opportunity_template: "Рост номинальных ставок на фоне инфляции может поддержать {factor}."
+      watch_template: "Смотреть реальную доходность {factor} относительно инфляции."
+  taxes:
+    tax_burden:
+      risk_template: "Изменение налогов может увеличить нагрузку через {factor}."
+      opportunity_template: "Смягчение налоговых условий может снизить нагрузку через {factor}."
+      watch_template: "Смотреть налоговые режимы, затрагивающие {factor}."
+  labor:
+    labor_cost:
+      risk_template: "Изменения на рынке труда могут поднять расходы через {factor}."
+      opportunity_template: "Стабилизация рынка труда может удержать расходы через {factor}."
+      watch_template: "Смотреть ФОТ и условия найма для {factor}."
+  commodities_gold:
+    commodity_revenue:
+      risk_template: "Движение цены сырья может снизить профильную выручку через {factor} в {industry_label}."
+      opportunity_template: "Рост цены сырья может поддержать выручку через {factor} в {industry_label}."
+      watch_template: "Смотреть цену сырья и выручку профиля в {industry_label}."
+    input_cost:
+      risk_template: "Удорожание сырья может поднять себестоимость через {factor}."
+      opportunity_template: "Снижение цен на сырьё может облегчить {factor}."
+      watch_template: "Смотреть сырьевые цены во входящих ресурсах {factor}."
+  consumer_demand:
+    demand_shift:
+      risk_template: "Сдвиг потребительского спроса может снизить выручку в {industry_label} через {factor}."
+      opportunity_template: "Рост спроса может поддержать выручку в {industry_label}."
+      watch_template: "Смотреть продажи и спрос в {industry_label}."
+  sector_regulation:
+    regulatory_cost:
+      risk_template: "Новые отраслевые правила могут увеличить стоимость деятельности в {industry_label} через {factor}."
+      opportunity_template: "Отсрочка жёстких правил может удержать стоимость деятельности через {factor}."
+      watch_template: "Смотреть отраслевые правила и стоимость соответствия в {industry_label}."
+  ma:
+    debt_service_cost:
+      risk_template: "Сделка M&A может изменить долговую нагрузку и стоимость обслуживания {factor}."
+      opportunity_template: "Реструктуризация после сделки может улучшить условия обслуживания {factor}."
+      watch_template: "Смотреть долговой контур {factor} после сделки."
+  other_econ:
+    demand_shift:
+      risk_template: "Событие может затронуть выручку компании через {factor} в {industry_label}."
+      opportunity_template: "При благоприятном развитии событие может поддержать выручку через {factor}."
+      watch_template: "Смотреть связь события с {factor} и {industry_label}."
